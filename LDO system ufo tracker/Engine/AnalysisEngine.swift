@@ -165,13 +165,13 @@ final class AnalysisEngine {
         return session
     }
 }
-
 struct Detection {
     var boundingBox: CGRect
     var timestamp: TimeInterval
-    extension AnalysisSession {
+}
+
+extension AnalysisSession {
     static func == (lhs: AnalysisSession, rhs: AnalysisSession) -> Bool {
         lhs.id == rhs.id
     }
-}
 }
