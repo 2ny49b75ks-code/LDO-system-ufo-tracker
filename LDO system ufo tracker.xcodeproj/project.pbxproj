@@ -261,6 +261,9 @@
 				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphoneos*]" = UIStatusBarStyleDefault;
+"INFOPLIST_KEY_NSCameraUsageDescription[sdk=iphoneos*]" = "LDO a besoin d'accéder à la caméra pour détecter et enregistrer les objets dans le ciel.";
+"INFOPLIST_KEY_NSMicrophoneUsageDescription[sdk=iphoneos*]" = "LDO a besoin du microphone pour analyser les sons captés pendant l'enregistrement vidéo.";
+"INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription[sdk=iphoneos*]" = "LDO souhaite enregistrer vos captures dans votre photothèque.";
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
