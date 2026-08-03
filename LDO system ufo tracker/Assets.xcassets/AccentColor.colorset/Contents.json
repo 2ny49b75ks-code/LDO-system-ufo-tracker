@@ -1,4 +1,3 @@
-cat > "/Volumes/workspace/repository/LDO system ufo tracker/Assets.xcassets/AccentColor.colorset/Contents.json" << 'EOF'
 {
   "colors" : [
     {
@@ -19,4 +18,3 @@ cat > "/Volumes/workspace/repository/LDO system ufo tracker/Assets.xcassets/Acce
     "version" : 1
   }
 }
-EOF
