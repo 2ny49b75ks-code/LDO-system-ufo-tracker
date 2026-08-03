@@ -10,7 +10,7 @@ import CoreImage
 import AVFoundation
 
 /// Résultat complet retourné à l'utilisateur (page annexe des résultats).
-struct AnalysisSession: Identifiable {
+struct AnalysisSession: Identifiable, Equatable {
     let id = UUID()
     var videoURLWithOverlays: URL?
     var photosWithOverlays: [CGImage] = []
@@ -169,4 +169,9 @@ final class AnalysisEngine {
 struct Detection {
     var boundingBox: CGRect
     var timestamp: TimeInterval
+    extension AnalysisSession {
+    static func == (lhs: AnalysisSession, rhs: AnalysisSession) -> Bool {
+        lhs.id == rhs.id
+    }
+}
 }
