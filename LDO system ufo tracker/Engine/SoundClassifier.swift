@@ -41,8 +41,7 @@ final class SoundClassifier {
         }
 
         do {
-            let audioFile = try AVAudioFile(forReading: videoURL)
-            let analyzer = SNAudioFileAnalyzer(audioFile: audioFile)
+       let analyzer = try SNAudioFileAnalyzer(url: videoURL)
             let request = try SNClassifySoundRequest(classifierIdentifier: .version1)
 
             let observer = ClassificationObserver { [weak self] results in
