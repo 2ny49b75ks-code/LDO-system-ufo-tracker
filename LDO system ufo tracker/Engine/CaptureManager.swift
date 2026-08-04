@@ -32,6 +32,13 @@ final class CaptureManager: NSObject, ObservableObject {
     private let analysisWindowSeconds: TimeInterval = 2.0
     private let quickMotionThreshold: Double = 0.02
 
+    /// Cadence de capture volontairement réduite (12 img/s) : largement suffisante pour
+    /// détecter un mouvement et calculer une trajectoire, tout en gardant l'enregistrement
+    /// et l'analyse fluides (60 img/s générerait un volume de données ingérable en quelques
+    /// secondes et surchargerait le CPU/GPU pendant l'enregistrement lui-même).
+    private let captureIntervalSeconds: TimeInterval = 1.0 / 12.0
+    private var lastCaptureTimestamp: TimeInterval = 0
+
     func configureMaximumLidar() {
         guard ARWorldTrackingConfiguration.supportsSceneReconstruction(.meshWithClassification) else {
             lidarActive = false
@@ -53,6 +60,7 @@ final class CaptureManager: NSObject, ObservableObject {
         isRecording.toggle()
         if isRecording {
             frameBuffer.removeAll()
+            lastCaptureTimestamp = 0
             startRecording()
         } else {
             stopRecordingAndAnalyze()
@@ -184,6 +192,12 @@ final class CaptureManager: NSObject, ObservableObject {
 extension CaptureManager: ARSessionDelegate {
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
         guard isRecording else { return }
+
+        // Limite volontaire de la cadence : on ignore les frames trop rapprochées
+        // dans le temps pour rester autour de captureIntervalSeconds entre deux captures.
+        guard frame.timestamp - lastCaptureTimestamp >= captureIntervalSeconds else { return }
+        lastCaptureTimestamp = frame.timestamp
+
         guard let cgImage = CGImage.from(pixelBuffer: frame.capturedImage) else { return }
         let captured = CapturedFrame(
             image: cgImage,
@@ -200,8 +214,13 @@ extension CGImage {
     /// Conversion utilitaire CVPixelBuffer (format YCbCr d'ARKit) -> CGImage via un CIContext
     /// partagé et réutilisé (créer un nouveau contexte à chaque frame est très coûteux et
     /// gèlerait l'interface pendant l'enregistrement).
+    ///
+    /// ARKit délivre systématiquement l'image caméra en orientation "paysage" native du
+    /// capteur, quelle que soit l'orientation physique de l'appareil. Comme LDO est utilisé
+    /// en mode portrait, on applique une rotation de 90° pour que les photos/analyses
+    /// correspondent à ce que l'utilisateur voit réellement à l'écran.
     static func from(pixelBuffer: CVPixelBuffer) -> CGImage? {
-        let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+        let ciImage = CIImage(cvPixelBuffer: pixelBuffer).oriented(.right)
         return sharedFrameConversionContext.createCGImage(ciImage, from: ciImage.extent)
     }
 }
