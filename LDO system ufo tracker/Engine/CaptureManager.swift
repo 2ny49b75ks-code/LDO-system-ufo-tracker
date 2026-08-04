@@ -13,6 +13,8 @@ import Photos
 import CoreImage
 import CoreImage.CIFilterBuiltins
 
+private let sharedFrameConversionContext = CIContext(options: [.useSoftwareRenderer: false])
+
 /// Étape 1 : capture vidéo HD combinée à la profondeur LiDAR (résolution de profondeur maximale),
 /// puis extraction des 3 meilleures images (netteté + contraste + présence d'un objet en mouvement),
 /// sauvegarde sur l'appareil et sur iCloud (via Photos framework).
@@ -195,10 +197,12 @@ extension CaptureManager: ARSessionDelegate {
 }
 
 extension CGImage {
+    /// Conversion utilitaire CVPixelBuffer (format YCbCr d'ARKit) -> CGImage via un CIContext
+    /// partagé et réutilisé (créer un nouveau contexte à chaque frame est très coûteux et
+    /// gèlerait l'interface pendant l'enregistrement).
     static func from(pixelBuffer: CVPixelBuffer) -> CGImage? {
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
-        let context = CIContext(options: nil)
-        return context.createCGImage(ciImage, from: ciImage.extent)
+        return sharedFrameConversionContext.createCGImage(ciImage, from: ciImage.extent)
     }
 }
 
