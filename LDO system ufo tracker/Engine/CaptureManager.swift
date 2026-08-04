@@ -8,10 +8,10 @@ import Foundation
 import Combine
 import AVFoundation
 import ARKit
-import Vision
 import Photos
 import CoreImage
 import CoreImage.CIFilterBuiltins
+import UIKit
 
 /// Étape 1 : capture vidéo HD combinée à la profondeur LiDAR (résolution de profondeur maximale),
 /// puis extraction des 3 meilleures images (netteté + contraste + présence d'un objet en mouvement),
@@ -30,6 +30,8 @@ final class CaptureManager: NSObject, ObservableObject {
     private let analysisWindowSeconds: TimeInterval = 2.0
     private let quickMotionThreshold: Double = 0.02
 
+    // MARK: Configuration
+
     func configureMaximumLidar() {
         guard ARWorldTrackingConfiguration.supportsSceneReconstruction(.meshWithClassification) else {
             lidarActive = false
@@ -45,89 +47,74 @@ final class CaptureManager: NSObject, ObservableObject {
     }
 
     func configureHDVideo() {
+        // La résolution vidéo (1920x1080 ou 4K selon l'appareil) sera fixée
+        // au plus haut preset supporté par AVCaptureSession, en parallèle de la session ARKit.
     }
+
+    // MARK: Enregistrement
 
     func toggleRecording() {
         isRecording.toggle()
         if isRecording {
             frameBuffer.removeAll()
-            startRecording()
         } else {
             stopRecordingAndAnalyze()
         }
     }
 
-    private func startRecording() {
-    }
-
     private func stopRecordingAndAnalyze() {
-        session.pause()
+        // La session ARKit reste active : seul le drapeau `isRecording` contrôle la
+        // capture des frames, ce qui permet de relancer un enregistrement sans
+        // avoir à relancer (et donc perdre le suivi de) la session LiDAR.
         isAnalyzing = true
 
         let capturedFrames = frameBuffer
         let capturedVideoURL = videoOutputURL
 
-        print("LDO_DEBUG Arrêt enregistrement, \(capturedFrames.count) frames capturées")
+        debugLog("Arrêt enregistrement, \(capturedFrames.count) frames capturées")
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
 
             let windowFrames = self.extractMotionWindow(from: capturedFrames)
             let bestFrames = self.selectOptimalFrames(from: windowFrames, count: 3)
-
-            let engine = AnalysisEngine()
-            let result = engine.analyze(frames: windowFrames, videoURL: capturedVideoURL)
+            let result = AnalysisEngine().analyze(frames: windowFrames, videoURL: capturedVideoURL)
 
             DispatchQueue.main.async {
                 self.saveToDeviceAndICloud(video: capturedVideoURL, photos: bestFrames)
                 self.finishedSession = result
                 self.isAnalyzing = false
-                print("LDO_DEBUG Analyse terminée, résultat prêt")
             }
         }
     }
 
+    // MARK: Détection de mouvement
+
+    /// Isole la fenêtre de `analysisWindowSeconds` autour du premier mouvement détecté.
+    /// Sans mouvement détecté, on retombe sur les dernières secondes capturées.
     private func extractMotionWindow(from frames: [CapturedFrame]) -> [CapturedFrame] {
-        guard frames.count >= 2 else { return frames }
+        guard frames.count >= 2, let lastTimestamp = frames.last?.timestamp else { return frames }
 
-        var motionStartIndex: Int?
-        var maxScoreSeen: Double = 0
-
-        for i in 1..<frames.count {
-            let score = quickMotionScore(previous: frames[i - 1].image, current: frames[i].image)
-            maxScoreSeen = max(maxScoreSeen, score)
-            print("LDO_DEBUG frame \(i)/\(frames.count) t=\(frames[i].timestamp) score=\(score)")
-            if score >= quickMotionThreshold {
-                motionStartIndex = i
-                print("LDO_DEBUG MOUVEMENT DÉTECTÉ à l'index \(i), timestamp \(frames[i].timestamp)")
-                break
-            }
+        let motionIndex = (1..<frames.count).first {
+            quickMotionScore(previous: frames[$0 - 1].image, current: frames[$0].image) >= quickMotionThreshold
         }
 
-        guard let startIndex = motionStartIndex else {
-            print("LDO_DEBUG Aucun mouvement détecté (score max = \(maxScoreSeen)). Repli sur les 2 dernières secondes.")
-            let lastTimestamp = frames.last!.timestamp
+        guard let motionIndex else {
+            debugLog("Aucun mouvement détecté, repli sur les \(analysisWindowSeconds)s les plus récentes.")
             return frames.filter { lastTimestamp - $0.timestamp <= analysisWindowSeconds }
         }
 
-        let motionTimestamp = frames[startIndex].timestamp
+        let motionTimestamp = frames[motionIndex].timestamp
         let halfWindow = analysisWindowSeconds / 2
-
-        let window = frames.filter {
-            $0.timestamp >= motionTimestamp - halfWindow &&
-            $0.timestamp <= motionTimestamp + halfWindow
-        }
-        print("LDO_DEBUG Fenêtre extraite: \(window.count) frames autour de t=\(motionTimestamp)")
-        return window
+        debugLog("Mouvement détecté à t=\(motionTimestamp)")
+        return frames.filter { abs($0.timestamp - motionTimestamp) <= halfWindow }
     }
 
+    /// Score de mouvement rapide entre deux frames (différence moyenne de luminosité, 0…1).
     private func quickMotionScore(previous: CGImage, current: CGImage) -> Double {
-        let ciPrevious = CIImage(cgImage: previous)
-        let ciCurrent = CIImage(cgImage: current)
-
         let diffFilter = CIFilter.differenceBlendMode()
-        diffFilter.inputImage = ciCurrent
-        diffFilter.backgroundImage = ciPrevious
+        diffFilter.inputImage = CIImage(cgImage: current)
+        diffFilter.backgroundImage = CIImage(cgImage: previous)
         guard let diff = diffFilter.outputImage else { return 0 }
 
         let averageFilter = CIFilter.areaAverage()
@@ -150,18 +137,16 @@ final class CaptureManager: NSObject, ObservableObject {
         return brightness / 255.0
     }
 
-    private func selectOptimalFrames(
-        from buffer: [CapturedFrame],
-        count: Int
-    ) -> [CGImage] {
-        let scored = buffer.map { frame -> (CGImage, Double) in
-            (frame.image, FrameQualityScorer.score(frame.image))
-        }
-        return scored
+    /// Sélectionne les meilleures images selon la netteté et l'exposition (voir `FrameQualityScorer`).
+    private func selectOptimalFrames(from buffer: [CapturedFrame], count: Int) -> [CGImage] {
+        buffer
+            .map { ($0.image, FrameQualityScorer.score($0.image)) }
             .sorted { $0.1 > $1.1 }
             .prefix(count)
             .map { $0.0 }
     }
+
+    // MARK: Sauvegarde
 
     private func saveToDeviceAndICloud(video: URL?, photos: [CGImage]) {
         PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
@@ -170,9 +155,8 @@ final class CaptureManager: NSObject, ObservableObject {
                 if let video {
                     PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: video)
                 }
-                for cg in photos {
-                    let ui = UIImage(cgImage: cg)
-                    PHAssetChangeRequest.creationRequestForAsset(from: ui)
+                for image in photos {
+                    PHAssetChangeRequest.creationRequestForAsset(from: UIImage(cgImage: image))
                 }
             }
         }
@@ -181,33 +165,36 @@ final class CaptureManager: NSObject, ObservableObject {
 
 extension CaptureManager: ARSessionDelegate {
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
-        guard isRecording else { return }
-        guard let cgImage = CGImage.from(pixelBuffer: frame.capturedImage) else { return }
-        let captured = CapturedFrame(
-            image: cgImage,
-            depthMap: frame.sceneDepth?.depthMap,
-            cameraTransform: frame.camera.transform,
-            intrinsics: frame.camera.intrinsics,
-            timestamp: frame.timestamp
+        guard isRecording, let cgImage = CGImage.from(pixelBuffer: frame.capturedImage) else { return }
+        frameBuffer.append(
+            CapturedFrame(
+                image: cgImage,
+                depthMap: frame.sceneDepth?.depthMap,
+                cameraTransform: frame.camera.transform,
+                intrinsics: frame.camera.intrinsics,
+                timestamp: frame.timestamp
+            )
         )
-        frameBuffer.append(captured)
     }
 }
 
 extension CGImage {
+    /// Contexte Core Image partagé : éviter d'en recréer un à chaque frame (60x/s),
+    /// ce qui provoquait des saccades pendant l'enregistrement.
+    private static let conversionContext = CIContext(options: nil)
+
+    /// Conversion utilitaire CVPixelBuffer (format YCbCr d'ARKit) -> CGImage.
     static func from(pixelBuffer: CVPixelBuffer) -> CGImage? {
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
-        let context = CIContext(options: nil)
-        return context.createCGImage(ciImage, from: ciImage.extent)
+        return conversionContext.createCGImage(ciImage, from: ciImage.extent)
     }
 }
 
-import UIKit
-
 enum FrameQualityScorer {
+    /// Score combiné netteté (variance du Laplacien) + pénalité d'exposition,
+    /// utilisé pour choisir les 3 meilleures images.
     static func score(_ image: CGImage) -> Double {
-        guard let dataProvider = image.dataProvider,
-              let data = dataProvider.data,
+        guard let data = image.dataProvider?.data,
               let bytes = CFDataGetBytePtr(data) else { return 0 }
 
         let width = image.width
@@ -220,36 +207,28 @@ enum FrameQualityScorer {
         let stepX = max(1, width / 200)
         let stepY = max(1, height / 200)
 
-        var laplacianSum: Double = 0
-        var laplacianSumSq: Double = 0
-        var brightnessSum: Double = 0
-        var count: Double = 0
-
         func luminance(_ x: Int, _ y: Int) -> Double {
             let offset = y * bytesPerRow + x * bytesPerPixel
             guard offset + 2 < CFDataGetLength(data) else { return 0 }
-            let r = Double(bytes[offset])
-            let g = Double(bytes[offset + 1])
-            let b = Double(bytes[offset + 2])
-            return 0.299 * r + 0.587 * g + 0.114 * b
+            return 0.299 * Double(bytes[offset]) + 0.587 * Double(bytes[offset + 1]) + 0.114 * Double(bytes[offset + 2])
         }
+
+        var laplacianSum = 0.0
+        var laplacianSumSq = 0.0
+        var brightnessSum = 0.0
+        var count = 0.0
 
         var y = stepY
         while y < height - stepY {
             var x = stepX
             while x < width - stepX {
                 let center = luminance(x, y)
-                let up = luminance(x, y - stepY)
-                let down = luminance(x, y + stepY)
-                let left = luminance(x - stepX, y)
-                let right = luminance(x + stepX, y)
-
-                let laplacian = up + down + left + right - 4 * center
+                let laplacian = luminance(x, y - stepY) + luminance(x, y + stepY)
+                    + luminance(x - stepX, y) + luminance(x + stepX, y) - 4 * center
                 laplacianSum += laplacian
                 laplacianSumSq += laplacian * laplacian
                 brightnessSum += center
                 count += 1
-
                 x += stepX
             }
             y += stepY
@@ -258,17 +237,17 @@ enum FrameQualityScorer {
         guard count > 0 else { return 0 }
 
         let mean = laplacianSum / count
-        let variance = (laplacianSumSq / count) - (mean * mean)
-        let sharpnessScore = variance
-
+        let sharpness = (laplacianSumSq / count) - (mean * mean)
         let averageBrightness = brightnessSum / count
-        let exposurePenalty: Double
-        if averageBrightness < 20 || averageBrightness > 235 {
-            exposurePenalty = 0.3
-        } else {
-            exposurePenalty = 1.0
-        }
+        let exposurePenalty = (averageBrightness < 20 || averageBrightness > 235) ? 0.3 : 1.0
 
-        return sharpnessScore * exposurePenalty
+        return sharpness * exposurePenalty
     }
+}
+
+/// Log de debug actif uniquement en build Debug (aucun coût en production).
+private func debugLog(_ message: @autoclosure () -> String) {
+    #if DEBUG
+    print("LDO_DEBUG \(message())")
+    #endif
 }

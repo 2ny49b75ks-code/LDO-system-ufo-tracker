@@ -60,9 +60,9 @@ final class ShapeClassifier {
         controls.inputImage = cropped
         controls.brightness = -0.3
         controls.contrast = 4.0
-        guard controls.outputImage != nil else { return nil }
+        guard let isolated = controls.outputImage else { return nil }
 
-        guard let averages = try? averageLuminance(of: cropped) else { return nil }
+        guard let averages = try? averageLuminance(of: isolated) else { return nil }
 
         return LuminousRegion(
             boundingBoxInImage: cropRect,
@@ -90,12 +90,14 @@ final class ShapeClassifier {
         var directionChanges = 0
         var totalDisplacement: CGFloat = 0
 
-        for i in 2..<max(centers.count, 2) where i < centers.count {
-            let v1 = CGVector(dx: centers[i-1].x - centers[i-2].x, dy: centers[i-1].y - centers[i-2].y)
-            let v2 = CGVector(dx: centers[i].x - centers[i-1].x, dy: centers[i].y - centers[i-1].y)
-            let dot = v1.dx * v2.dx + v1.dy * v2.dy
-            if dot < 0 { directionChanges += 1 } // inversion de direction = battement/oscillation
-            totalDisplacement += hypot(v2.dx, v2.dy)
+        if centers.count > 2 {
+            for i in 2..<centers.count {
+                let v1 = CGVector(dx: centers[i-1].x - centers[i-2].x, dy: centers[i-1].y - centers[i-2].y)
+                let v2 = CGVector(dx: centers[i].x - centers[i-1].x, dy: centers[i].y - centers[i-1].y)
+                let dot = v1.dx * v2.dx + v1.dy * v2.dy
+                if dot < 0 { directionChanges += 1 } // inversion de direction = battement/oscillation
+                totalDisplacement += hypot(v2.dx, v2.dy)
+            }
         }
 
         let oscillationRate = Double(directionChanges) / Double(max(centers.count - 2, 1))

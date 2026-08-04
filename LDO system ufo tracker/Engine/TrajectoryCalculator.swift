@@ -150,15 +150,13 @@ final class TrajectoryCalculator {
 
         // Somme des écarts perpendiculaires à la droite start->end, normalisée par l'étendue totale.
         var totalDeviation = 0.0
-        var totalExtent = 0.0
         for sample in samples {
             let vector = sample.direction - start
             let projection = simd_dot(vector, axis)
             let perpendicular = vector - projection * axis
             totalDeviation += simd_length(perpendicular)
-            totalExtent += 1
         }
-        let averageDeviation = totalDeviation / max(totalExtent, 1)
+        let averageDeviation = totalDeviation / Double(max(samples.count, 1))
         let r2 = max(0, 1 - averageDeviation * 50) // mise à l'échelle empirique (angles unitaires, petits écarts)
         return (r2 > 0.97, r2)
     }

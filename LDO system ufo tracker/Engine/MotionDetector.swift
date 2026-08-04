@@ -127,12 +127,7 @@ final class MotionDetector {
             return []
         }
 
-        var boxes: [CGRect] = []
-        for i in 0..<observation.topLevelContours.count {
-            let contour = observation.topLevelContours[i]
-            boxes.append(contour.normalizedPath.boundingBox)
-        }
-        return boxes
+        return observation.topLevelContours.map { $0.normalizedPath.boundingBox }
     }
 
     // MARK: - 4. Suivi (tracking) d'objet dans le temps
