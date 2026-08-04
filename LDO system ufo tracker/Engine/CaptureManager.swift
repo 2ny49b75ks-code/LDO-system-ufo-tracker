@@ -32,10 +32,6 @@ final class CaptureManager: NSObject, ObservableObject {
     private let analysisWindowSeconds: TimeInterval = 2.0
     private let quickMotionThreshold: Double = 0.02
 
-    /// Cadence de capture volontairement réduite (12 img/s) : largement suffisante pour
-    /// détecter un mouvement et calculer une trajectoire, tout en gardant l'enregistrement
-    /// et l'analyse fluides (60 img/s générerait un volume de données ingérable en quelques
-    /// secondes et surchargerait le CPU/GPU pendant l'enregistrement lui-même).
     private let captureIntervalSeconds: TimeInterval = 1.0 / 12.0
     private var lastCaptureTimestamp: TimeInterval = 0
 
@@ -51,6 +47,7 @@ final class CaptureManager: NSObject, ObservableObject {
         session.delegate = self
         session.run(config, options: [.resetTracking, .removeExistingAnchors])
         lidarActive = true
+        NSLog("LDO_DEBUG configureMaximumLidar appelé, lidarActive=%@", String(lidarActive))
     }
 
     func configureHDVideo() {
@@ -58,6 +55,7 @@ final class CaptureManager: NSObject, ObservableObject {
 
     func toggleRecording() {
         isRecording.toggle()
+        NSLog("LDO_DEBUG toggleRecording -> isRecording=%@", String(isRecording))
         if isRecording {
             frameBuffer.removeAll()
             lastCaptureTimestamp = 0
@@ -68,6 +66,7 @@ final class CaptureManager: NSObject, ObservableObject {
     }
 
     private func startRecording() {
+        NSLog("LDO_DEBUG startRecording appelé")
     }
 
     private func stopRecordingAndAnalyze() {
@@ -77,28 +76,36 @@ final class CaptureManager: NSObject, ObservableObject {
         let capturedFrames = frameBuffer
         let capturedVideoURL = videoOutputURL
 
-        print("LDO_DEBUG Arrêt enregistrement, \(capturedFrames.count) frames capturées")
+        NSLog("LDO_DEBUG Arrêt enregistrement, %d frames capturées", capturedFrames.count)
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self else { return }
+            guard let self else {
+                NSLog("LDO_DEBUG self est nil dans le bloc async, abandon")
+                return
+            }
 
+            NSLog("LDO_DEBUG Début analyse en arrière-plan")
             let windowFrames = self.extractMotionWindow(from: capturedFrames)
             let bestFrames = self.selectOptimalFrames(from: windowFrames, count: 3)
 
             let engine = AnalysisEngine()
             let result = engine.analyze(frames: windowFrames, videoURL: capturedVideoURL)
+            NSLog("LDO_DEBUG AnalysisEngine.analyze terminé")
 
             DispatchQueue.main.async {
                 self.saveToDeviceAndICloud(video: capturedVideoURL, photos: bestFrames)
                 self.finishedSession = result
                 self.isAnalyzing = false
-                print("LDO_DEBUG Analyse terminée, résultat prêt")
+                NSLog("LDO_DEBUG Analyse terminée, résultat prêt, finishedSession assigné")
             }
         }
     }
 
     private func extractMotionWindow(from frames: [CapturedFrame]) -> [CapturedFrame] {
-        guard frames.count >= 2 else { return frames }
+        guard frames.count >= 2 else {
+            NSLog("LDO_DEBUG extractMotionWindow: moins de 2 frames (%d), retour direct", frames.count)
+            return frames
+        }
 
         var motionStartIndex: Int?
         var maxScoreSeen: Double = 0
@@ -106,18 +113,19 @@ final class CaptureManager: NSObject, ObservableObject {
         for i in 1..<frames.count {
             let score = quickMotionScore(previous: frames[i - 1].image, current: frames[i].image)
             maxScoreSeen = max(maxScoreSeen, score)
-            print("LDO_DEBUG frame \(i)/\(frames.count) t=\(frames[i].timestamp) score=\(score)")
             if score >= quickMotionThreshold {
                 motionStartIndex = i
-                print("LDO_DEBUG MOUVEMENT DÉTECTÉ à l'index \(i), timestamp \(frames[i].timestamp)")
+                NSLog("LDO_DEBUG MOUVEMENT DÉTECTÉ à l'index %d/%d, score=%.4f, timestamp=%.3f", i, frames.count, score, frames[i].timestamp)
                 break
             }
         }
 
         guard let startIndex = motionStartIndex else {
-            print("LDO_DEBUG Aucun mouvement détecté (score max = \(maxScoreSeen)). Repli sur les 2 dernières secondes.")
+            NSLog("LDO_DEBUG Aucun mouvement détecté sur %d frames (score max = %.4f). Repli sur les 2 dernières secondes.", frames.count, maxScoreSeen)
             let lastTimestamp = frames.last!.timestamp
-            return frames.filter { lastTimestamp - $0.timestamp <= analysisWindowSeconds }
+            let fallback = frames.filter { lastTimestamp - $0.timestamp <= analysisWindowSeconds }
+            NSLog("LDO_DEBUG Fenêtre de repli: %d frames", fallback.count)
+            return fallback
         }
 
         let motionTimestamp = frames[startIndex].timestamp
@@ -127,7 +135,7 @@ final class CaptureManager: NSObject, ObservableObject {
             $0.timestamp >= motionTimestamp - halfWindow &&
             $0.timestamp <= motionTimestamp + halfWindow
         }
-        print("LDO_DEBUG Fenêtre extraite: \(window.count) frames autour de t=\(motionTimestamp)")
+        NSLog("LDO_DEBUG Fenêtre extraite: %d frames autour de t=%.3f", window.count, motionTimestamp)
         return window
     }
 
@@ -167,15 +175,20 @@ final class CaptureManager: NSObject, ObservableObject {
         let scored = buffer.map { frame -> (CGImage, Double) in
             (frame.image, FrameQualityScorer.score(frame.image))
         }
-        return scored
-            .sorted { $0.1 > $1.1 }
+        let sorted = scored.sorted { $0.1 > $1.1 }
+        NSLog("LDO_DEBUG selectOptimalFrames: %d frames évaluées, meilleur score=%.2f", buffer.count, sorted.first?.1 ?? -1)
+        return sorted
             .prefix(count)
             .map { $0.0 }
     }
 
     private func saveToDeviceAndICloud(video: URL?, photos: [CGImage]) {
+        NSLog("LDO_DEBUG saveToDeviceAndICloud appelé, %d photos, vidéo=%@", photos.count, video?.absoluteString ?? "nil")
         PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
-            guard status == .authorized else { return }
+            guard status == .authorized else {
+                NSLog("LDO_DEBUG Autorisation photothèque refusée, status=%d", status.rawValue)
+                return
+            }
             PHPhotoLibrary.shared().performChanges {
                 if let video {
                     PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: video)
@@ -193,8 +206,6 @@ extension CaptureManager: ARSessionDelegate {
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
         guard isRecording else { return }
 
-        // Limite volontaire de la cadence : on ignore les frames trop rapprochées
-        // dans le temps pour rester autour de captureIntervalSeconds entre deux captures.
         guard frame.timestamp - lastCaptureTimestamp >= captureIntervalSeconds else { return }
         lastCaptureTimestamp = frame.timestamp
 
@@ -211,14 +222,6 @@ extension CaptureManager: ARSessionDelegate {
 }
 
 extension CGImage {
-    /// Conversion utilitaire CVPixelBuffer (format YCbCr d'ARKit) -> CGImage via un CIContext
-    /// partagé et réutilisé (créer un nouveau contexte à chaque frame est très coûteux et
-    /// gèlerait l'interface pendant l'enregistrement).
-    ///
-    /// ARKit délivre systématiquement l'image caméra en orientation "paysage" native du
-    /// capteur, quelle que soit l'orientation physique de l'appareil. Comme LDO est utilisé
-    /// en mode portrait, on applique une rotation de 90° pour que les photos/analyses
-    /// correspondent à ce que l'utilisateur voit réellement à l'écran.
     static func from(pixelBuffer: CVPixelBuffer) -> CGImage? {
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer).oriented(.right)
         return sharedFrameConversionContext.createCGImage(ciImage, from: ciImage.extent)
