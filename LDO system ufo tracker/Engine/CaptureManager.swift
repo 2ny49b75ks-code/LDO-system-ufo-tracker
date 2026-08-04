@@ -27,14 +27,8 @@ final class CaptureManager: NSObject, ObservableObject {
     private var frameBuffer: [CapturedFrame] = []
     private let quickMotionContext = CIContext()
 
-    /// Durée de la fenêtre d'analyse autour de la détection de mouvement (secondes).
     private let analysisWindowSeconds: TimeInterval = 2.0
-
-    /// Seuil de différence moyenne (0 à 1) au-delà duquel deux images consécutives
-    /// sont considérées comme montrant un mouvement (calcul rapide, sans Vision).
     private let quickMotionThreshold: Double = 0.02
-
-    // MARK: Configuration
 
     func configureMaximumLidar() {
         guard ARWorldTrackingConfiguration.supportsSceneReconstruction(.meshWithClassification) else {
@@ -43,7 +37,7 @@ final class CaptureManager: NSObject, ObservableObject {
         }
         let config = ARWorldTrackingConfiguration()
         config.sceneReconstruction = .meshWithClassification
-        config.frameSemantics.insert(.sceneDepth)          // profondeur LiDAR maximale disponible
+        config.frameSemantics.insert(.sceneDepth)
         config.frameSemantics.insert(.smoothedSceneDepth)
         session.delegate = self
         session.run(config, options: [.resetTracking, .removeExistingAnchors])
@@ -51,8 +45,6 @@ final class CaptureManager: NSObject, ObservableObject {
     }
 
     func configureHDVideo() {
-        // La résolution vidéo (1920x1080 ou 4K selon l'appareil) est fixée
-        // au plus haut preset supporté par AVCaptureSession en parallèle de la session ARKit.
     }
 
     func toggleRecording() {
@@ -63,6 +55,88 @@ final class CaptureManager: NSObject, ObservableObject {
         } else {
             stopRecordingAndAnalyze()
         }
+    }
+
+    private func startRecording() {
+    }
+
+    private func stopRecordingAndAnalyze() {
+        session.pause()
+        isAnalyzing = true
+
+        let capturedFrames = frameBuffer
+        let capturedVideoURL = videoOutputURL
+
+        print("LDO_DEBUG Arrêt enregistrement, \(capturedFrames.count) frames capturées")
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+
+            let windowFrames = self.extractMotionWindow(from: capturedFrames)
+            let bestFrames = self.selectOptimalFrames(from: windowFrames, count: 3)
+
+            let engine = AnalysisEngine()
+            let result = engine.analyze(frames: windowFrames, videoURL: capturedVideoURL)
+
+            DispatchQueue.main.async {
+                self.saveToDeviceAndICloud(video: capturedVideoURL, photos: bestFrames)
+                self.finishedSession = result
+                self.isAnalyzing = false
+                print("LDO_DEBUG Analyse terminée, résultat prêt")
+            }
+        }
+    }
+
+    private func extractMotionWindow(from frames: [CapturedFrame]) -> [CapturedFrame] {
+        guard frames.count >= 2 else { return frames }
+
+        var motionStartIndex: Int?
+        var maxScoreSeen: Double = 0
+
+        for i in 1..<frames.count {
+            let score = quickMotionScore(previous: frames[i - 1].image, current: frames[i].image)
+            maxScoreSeen = max(maxScoreSeen, score)
+            print("LDO_DEBUG frame \(i)/\(frames.count) t=\(frames[i].timestamp) score=\(score)")
+            if score >= quickMotionThreshold {
+                motionStartIndex = i
+                print("LDO_DEBUG MOUVEMENT DÉTECTÉ à l'index \(i), timestamp \(frames[i].timestamp)")
+                break
+            }
+        }
+
+        guard let startIndex = motionStartIndex else {
+            print("LDO_DEBUG Aucun mouvement détecté (score max = \(maxScoreSeen)). Repli sur les 2 dernières secondes.")
+            let lastTimestamp = frames.last!.timestamp
+            return frames.filter { lastTimestamp - $0.timestamp <= analysisWindowSeconds }
+        }
+
+        let motionTimestamp = frames[startIndex].timestamp
+        let halfWindow = analysisWindowSeconds / 2
+
+        let window = frames.filter {
+            $0.timestamp >= motionTimestamp - halfWindow &&
+            $0.timestamp <= motionTimestamp + halfWindow
+        }
+        print("LDO_DEBUG Fenêtre extraite: \(window.count) frames autour de t=\(motionTimestamp)")
+        return window
+    }
+
+    private func quickMotionScore(previous: CGImage, current: CGImage) -> Double {
+        let ciPrevious = CIImage(cgImage: previous)
+        let ciCurrent = CIImage(cgImage: current)
+
+        let diffFilter = CIFilter.differenceBlendMode()
+        diffFilter.inputImage = ciCurrent
+        diffFilter.backgroundImage = ciPrevious
+        guard let diff = diffFilter.outputImage else { return 0 }
+
+        let averageFilter = CIFilter.areaAverage()
+        averageFilter.inputImage = diff
+        averageFilter.extent = diff.extent
+        guard let averaged = averageFilter.outputImage else { return 0 }
+
+        var pixel = [UInt8](repeating: 0, count: 4)
+        pixel.withUnsafeMutableBytes { rawPointer in        }
     }
 
     private func startRecording() {
