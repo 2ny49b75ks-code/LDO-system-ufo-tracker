@@ -46,6 +46,26 @@ struct ContentView: View {
                         .frame(width: 110, height: 60)
                 }
                 .padding(.bottom, 40)
+                .disabled(capture.isAnalyzing)
+            }
+
+            // Écran de chargement visible pendant l'analyse, à la place de l'écran noir
+            // qui apparaissait précédemment entre l'arrêt de l'enregistrement et l'affichage
+            // des résultats.
+            if capture.isAnalyzing {
+                ZStack {
+                    Color.black.opacity(0.85)
+                        .ignoresSafeArea()
+                    VStack(spacing: 20) {
+                        ProgressView()
+                            .progressViewStyle(CircularProgressViewStyle(tint: .green))
+                            .scaleEffect(1.8)
+                        Text("Analyse en cours...")
+                            .foregroundColor(.green)
+                            .font(.headline)
+                    }
+                }
+                .transition(.opacity)
             }
         }
         .onAppear {
