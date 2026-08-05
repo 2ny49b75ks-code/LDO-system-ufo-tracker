@@ -30,6 +30,12 @@ final class CaptureManager: NSObject, ObservableObject {
     private let analysisWindowSeconds: TimeInterval = 2.0
     private let quickMotionThreshold: Double = 0.02
 
+    // Limite la capture à ~12 images/seconde (au lieu des ~60 fps d'ARKit) : largement
+    // suffisant pour l'analyse de mouvement/trajectoire, et réduit nettement la charge
+    // mémoire/CPU pendant l'enregistrement — donc plus de fluidité côté UI.
+    private let captureIntervalSeconds: TimeInterval = 1.0 / 12.0
+    private var lastCaptureTimestamp: TimeInterval = 0
+
     // MARK: Configuration
 
     func configureMaximumLidar() {
@@ -57,6 +63,7 @@ final class CaptureManager: NSObject, ObservableObject {
         isRecording.toggle()
         if isRecording {
             frameBuffer.removeAll()
+            lastCaptureTimestamp = 0
         } else {
             stopRecordingAndAnalyze()
         }
@@ -165,7 +172,13 @@ final class CaptureManager: NSObject, ObservableObject {
 
 extension CaptureManager: ARSessionDelegate {
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
-        guard isRecording, let cgImage = CGImage.from(pixelBuffer: frame.capturedImage) else { return }
+        guard isRecording else { return }
+
+        // Throttle : au plus une frame gardée toutes les `captureIntervalSeconds`.
+        guard frame.timestamp - lastCaptureTimestamp >= captureIntervalSeconds else { return }
+        lastCaptureTimestamp = frame.timestamp
+
+        guard let cgImage = CGImage.from(pixelBuffer: frame.capturedImage) else { return }
         frameBuffer.append(
             CapturedFrame(
                 image: cgImage,
@@ -179,13 +192,15 @@ extension CaptureManager: ARSessionDelegate {
 }
 
 extension CGImage {
-    /// Contexte Core Image partagé : éviter d'en recréer un à chaque frame (60x/s),
+    /// Contexte Core Image partagé : éviter d'en recréer un à chaque frame,
     /// ce qui provoquait des saccades pendant l'enregistrement.
     private static let conversionContext = CIContext(options: nil)
 
-    /// Conversion utilitaire CVPixelBuffer (format YCbCr d'ARKit) -> CGImage.
+    /// Conversion utilitaire CVPixelBuffer (format YCbCr d'ARKit) -> CGImage, réorientée pour
+    /// correspondre à l'orientation portrait de l'appareil (ARKit capture nativement en paysage,
+    /// quelle que soit l'orientation de l'UI, d'où l'image de travers sans cette correction).
     static func from(pixelBuffer: CVPixelBuffer) -> CGImage? {
-        let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+        let ciImage = CIImage(cvPixelBuffer: pixelBuffer).oriented(.right)
         return conversionContext.createCGImage(ciImage, from: ciImage.extent)
     }
 }
