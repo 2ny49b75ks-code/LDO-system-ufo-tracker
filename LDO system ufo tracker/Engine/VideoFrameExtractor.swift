@@ -32,26 +32,26 @@ enum VideoFrameExtractor {
     ) -> [CapturedFrame] {
         let asset = AVURLAsset(url: videoURL)
 
-        // Chargement asynchrone (API moderne) plutôt que les propriétés synchrones dépréciées
-        // (`asset.tracks`, `asset.duration`) : sur un fichier fraîchement copié — le cas exact
-        // d'une vidéo importée depuis la bibliothèque — les propriétés synchrones peuvent renvoyer
-        // une durée à zéro avant que les métadonnées soient réellement chargées, ce qui faisait
-        // échouer silencieusement toute l'extraction (aucune image, donc aucun résultat d'analyse).
-        // Pont synchrone par sémaphore, dans le même esprit que SoundClassifier/OverlayRenderer.
+        // Attend explicitement que les métadonnées (pistes, durée) soient chargées avant d'y
+        // accéder, via l'API par callback à l'ancienne (GCD, pas une Task Swift Concurrency) —
+        // sûre à ponter avec un sémaphore, contrairement à `Task { await ... }` qui peut affamer
+        // le pool de fils coopératif si on le bloque ainsi depuis une file GCD (ça a causé une
+        // régression : plus aucune vidéo, LIVE ou importée, n'était analysée correctement).
         let semaphore = DispatchSemaphore(value: 0)
-        var hasVideoTrack = false
-        var duration: Double = 0
-        Task {
-            hasVideoTrack = ((try? await asset.loadTracks(withMediaType: .video).first) ?? nil) != nil
-            duration = (try? await asset.load(.duration).seconds) ?? 0
+        asset.loadValuesAsynchronously(forKeys: ["tracks", "duration"]) {
             semaphore.signal()
         }
         _ = semaphore.wait(timeout: .now() + 15)
 
-        guard hasVideoTrack else {
-            debugLog("extractFrames : aucune piste vidéo trouvée pour \(videoURL.lastPathComponent)")
+        guard asset.statusOfValue(forKey: "tracks", error: nil) == .loaded,
+              asset.statusOfValue(forKey: "duration", error: nil) == .loaded,
+              asset.tracks(withMediaType: .video).first != nil
+        else {
+            debugLog("extractFrames : métadonnées non chargées ou aucune piste vidéo pour \(videoURL.lastPathComponent)")
             return []
         }
+
+        let duration = asset.duration.seconds
         guard duration.isFinite, duration > 0 else {
             debugLog("extractFrames : durée invalide (\(duration)) pour \(videoURL.lastPathComponent)")
             return []
