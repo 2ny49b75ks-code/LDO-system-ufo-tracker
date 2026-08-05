@@ -7,6 +7,8 @@
 import Foundation
 import CoreGraphics
 import CoreText
+import CoreImage
+import CoreMedia
 import AVFoundation
 
 /// Étape 9 : incruste sur les photos et la vidéo :
@@ -70,23 +72,91 @@ enum OverlayRenderer {
         return context.makeImage() ?? image
     }
 
-    /// Compositeur vidéo : structure à implémenter avec AVVideoCompositing pour appliquer les mêmes
-    /// incrustations image par image sur la vidéo complète (pas seulement les 3 photos). Le principe
-    /// est identique à `draw(on:session:)` mais exécuté dans `startRequest(_:)` pour chaque CVPixelBuffer
-    /// de la composition, avec interpolation de la position de trajectoire selon le temps de chaque image.
+    /// Exporte `sourceURL` en incrustant, image par image, les mêmes éléments que `draw(on:session:)`
+    /// (trajectoire complète du clip, date/heure, vitesse, logo conditionnel). La trajectoire affichée
+    /// est déjà celle de l'ensemble du clip (pas de position instantanée par image dans `AnalysisSession`),
+    /// donc l'incrustation est identique sur toute la durée — cohérent avec le rendu des 3 photos.
+    ///
+    /// Bridge synchrone autour de l'export asynchrone d'AVFoundation, dans le même esprit que
+    /// `SoundClassifier` dans `AnalysisEngine.analyze(...)` : acceptable ici car on est déjà hors
+    /// du fil principal (voir `CaptureManager.stopRecordingAndAnalyze`).
+    static func exportVideoWithOverlays(sourceURL: URL?, session: AnalysisSession) -> URL? {
+        guard let sourceURL else { return nil }
+        let asset = AVURLAsset(url: sourceURL)
+        guard let videoTrack = asset.tracks(withMediaType: .video).first else { return sourceURL }
+
+        let composition = AVMutableVideoComposition()
+        // Le compositeur personnalisé ci-dessous pivote lui-même chaque image (voir `startRequest`),
+        // donc la taille de rendu est directement la taille portrait (dimensions inversées).
+        let naturalSize = videoTrack.naturalSize
+        composition.renderSize = CGSize(width: naturalSize.height, height: naturalSize.width)
+        composition.frameDuration = CMTime(value: 1, timescale: 30)
+        composition.customVideoCompositorClass = VideoOverlayCompositor.self
+
+        let instruction = OverlayVideoCompositionInstruction(
+            sourceTrackID: videoTrack.trackID,
+            timeRange: CMTimeRange(start: .zero, duration: asset.duration),
+            session: session
+        )
+        composition.instructions = [instruction]
+
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("mov")
+
+        guard let export = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetHighestQuality) else {
+            return sourceURL
+        }
+        export.outputURL = outputURL
+        export.outputFileType = .mov
+        export.videoComposition = composition
+
+        let semaphore = DispatchSemaphore(value: 0)
+        export.exportAsynchronously { semaphore.signal() }
+        _ = semaphore.wait(timeout: .now() + 30)
+
+        return export.status == .completed ? outputURL : sourceURL
+    }
+
+    /// Compositeur vidéo : applique `draw(on:session:)` image par image sur la vidéo complète (pas
+    /// seulement les 3 photos), via `exportVideoWithOverlays(sourceURL:session:)` ci-dessus.
     final class VideoOverlayCompositor: NSObject, AVVideoCompositing {
         var sourcePixelBufferAttributes: [String: Any]? = [String(kCVPixelBufferPixelFormatTypeKey): kCVPixelFormatType_32BGRA]
         var requiredPixelBufferAttributesForRenderContext: [String: Any] = [String(kCVPixelBufferPixelFormatTypeKey): kCVPixelFormatType_32BGRA]
 
-        func renderContextChanged(_ newRenderContext: AVVideoCompositionRenderContext) {}
+        private let ciContext = CIContext()
+        private var renderContext: AVVideoCompositionRenderContext?
+
+        func renderContextChanged(_ newRenderContext: AVVideoCompositionRenderContext) {
+            renderContext = newRenderContext
+        }
 
         func startRequest(_ asyncVideoCompositionRequest: AVAsynchronousVideoCompositionRequest) {
-            // Pour chaque image de la vidéo : récupérer le CVPixelBuffer source, le convertir en
-            // CGImage, appliquer `draw(on:session:)` avec les points de trajectoire interpolés au
-            // temps `asyncVideoCompositionRequest.compositionTime`, reconvertir en CVPixelBuffer,
-            // puis appeler `finish(withComposedVideoFrame:)`. Omis ici : dépend du runtime AVFoundation.
-            asyncVideoCompositionRequest.finish(with: NSError(domain: "LDO", code: -1))
+            guard
+                let instruction = asyncVideoCompositionRequest.videoCompositionInstruction as? OverlayVideoCompositionInstruction,
+                let sourceBuffer = asyncVideoCompositionRequest.sourceFrame(byTrackID: instruction.sourceTrackID),
+                let outputBuffer = renderContext?.newPixelBuffer()
+            else {
+                asyncVideoCompositionRequest.finish(with: NSError(domain: "LDO.VideoOverlayCompositor", code: -1))
+                return
+            }
+
+            // Même correction d'orientation que `CGImage.from(pixelBuffer:)` : le buffer source est
+            // le paysage natif ARKit non transformé (les compositeurs personnalisés reçoivent les
+            // images brutes, sans le `preferredTransform` de la piste).
+            let sourceImage = CIImage(cvPixelBuffer: sourceBuffer).oriented(.right)
+            guard let sourceCGImage = ciContext.createCGImage(sourceImage, from: sourceImage.extent) else {
+                asyncVideoCompositionRequest.finish(withComposedVideoFrame: sourceBuffer)
+                return
+            }
+
+            let overlaidImage = OverlayRenderer.draw(on: sourceCGImage, session: instruction.session)
+            ciContext.render(CIImage(cgImage: overlaidImage), to: outputBuffer)
+
+            asyncVideoCompositionRequest.finish(withComposedVideoFrame: outputBuffer)
         }
+
+        func cancelAllPendingVideoCompositionRequests() {}
     }
 
     // MARK: - Détail du dessin
@@ -135,6 +205,26 @@ enum OverlayRenderer {
         let bounds = CTLineGetBoundsWithOptions(ctLine, [])
         context.textPosition = CGPoint(x: center.x - bounds.width / 2, y: center.y - bounds.height / 3)
         CTLineDraw(ctLine, context)
+    }
+}
+
+/// Instruction de composition minimale : une seule piste source, la même incrustation sur toute
+/// la durée du clip (voir `OverlayRenderer.exportVideoWithOverlays`).
+final class OverlayVideoCompositionInstruction: NSObject, AVVideoCompositionInstructionProtocol {
+    let timeRange: CMTimeRange
+    let enablePostProcessing = false
+    let containsTweening = false
+    let requiredSourceTrackIDs: [NSValue]?
+    let passthroughTrackID: CMPersistentTrackID = kCMPersistentTrackID_Invalid
+
+    let sourceTrackID: CMPersistentTrackID
+    let session: AnalysisSession
+
+    init(sourceTrackID: CMPersistentTrackID, timeRange: CMTimeRange, session: AnalysisSession) {
+        self.sourceTrackID = sourceTrackID
+        self.timeRange = timeRange
+        self.requiredSourceTrackIDs = [NSNumber(value: sourceTrackID)]
+        self.session = session
     }
 }
 

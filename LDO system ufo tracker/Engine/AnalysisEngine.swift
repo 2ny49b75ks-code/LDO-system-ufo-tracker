@@ -150,17 +150,19 @@ final class AnalysisEngine {
         session.soundMatchedCategory = soundResult.matchedCategory
         session.soundConfidence = soundResult.confidence
 
-        // Étape 9 + rendu final : incruste trajectoire rouge, date/heure, vitesse max, et le logo LDO
-        // conditionnel sur les 3 photos (voir OverlayRenderer.swift). Le rendu vidéo complet suit le
-        // même principe via AVVideoCompositing (squelette fourni, à compléter avec AVFoundation).
-        session.photosWithOverlays = frames.prefix(3).map { OverlayRenderer.draw(on: $0.image, session: session) }
-        session.videoURLWithOverlays = videoURL // overlay vidéo : voir OverlayRenderer.VideoOverlayCompositor
-
         // Verdict final (voir VerdictCalculator.swift), avec la liste des facteurs affichée à l'utilisateur.
+        // Calculé AVANT le rendu des incrustations ci-dessous : le logo LDO n'est dessiné que si le
+        // verdict penche vers "OVNI" (voir OverlayRenderer.draw), donc verdictConfidencePercent doit
+        // déjà être renseigné à ce moment-là.
         let verdict = verdictCalculator.computeVerdict(session: session, shape: shape)
         session.verdictLabel = verdict.label
         session.verdictConfidencePercent = verdict.percent
         session.verdictFactors = verdict.factors
+
+        // Étape 9 + rendu final : incruste trajectoire rouge, date/heure, vitesse max, et le logo LDO
+        // conditionnel sur les 3 photos et sur la vidéo complète (voir OverlayRenderer.swift).
+        session.photosWithOverlays = frames.prefix(3).map { OverlayRenderer.draw(on: $0.image, session: session) }
+        session.videoURLWithOverlays = OverlayRenderer.exportVideoWithOverlays(sourceURL: videoURL, session: session)
 
         return session
     }

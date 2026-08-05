@@ -7,6 +7,7 @@
 import Foundation
 import Combine
 import AVFoundation
+import CoreMedia
 import ARKit
 import Photos
 import CoreImage
@@ -32,9 +33,17 @@ final class CaptureManager: NSObject, ObservableObject {
 
     // Limite la capture à ~12 images/seconde (au lieu des ~60 fps d'ARKit) : largement
     // suffisant pour l'analyse de mouvement/trajectoire, et réduit nettement la charge
-    // mémoire/CPU pendant l'enregistrement — donc plus de fluidité côté UI.
+    // mémoire/CPU pendant l'enregistrement — donc plus de fluidité côté UI. Le fichier vidéo
+    // enregistré (voir plus bas) suit la même cadence, cohérent avec ce compromis.
     private let captureIntervalSeconds: TimeInterval = 1.0 / 12.0
     private var lastCaptureTimestamp: TimeInterval = 0
+
+    // MARK: Écriture du fichier vidéo (AVAssetWriter)
+
+    private var assetWriter: AVAssetWriter?
+    private var videoWriterInput: AVAssetWriterInput?
+    private var audioWriterInput: AVAssetWriterInput?
+    private var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor?
 
     // MARK: Configuration
 
@@ -47,14 +56,30 @@ final class CaptureManager: NSObject, ObservableObject {
         config.sceneReconstruction = .meshWithClassification
         config.frameSemantics.insert(.sceneDepth)
         config.frameSemantics.insert(.smoothedSceneDepth)
+        config.providesAudioData = true
+
+        // Résolution vidéo maximale disponible sur l'appareil (voir `configureHDVideo`) : on la
+        // sélectionne directement dans la configuration ARKit plutôt que via une AVCaptureSession
+        // séparée, qui ne peut pas partager fiablement la caméra avec ARKit.
+        if let bestFormat = Self.bestAvailableVideoFormat() {
+            config.videoFormat = bestFormat
+        }
+
         session.delegate = self
         session.run(config, options: [.resetTracking, .removeExistingAnchors])
         lidarActive = true
     }
 
     func configureHDVideo() {
-        // La résolution vidéo (1920x1080 ou 4K selon l'appareil) sera fixée
-        // au plus haut preset supporté par AVCaptureSession, en parallèle de la session ARKit.
+        // La résolution vidéo (jusqu'à 4K selon l'appareil) est déjà sélectionnée dans
+        // `configureMaximumLidar()` ci-dessus, via `bestAvailableVideoFormat()`.
+    }
+
+    private static func bestAvailableVideoFormat() -> ARConfiguration.VideoFormat? {
+        ARWorldTrackingConfiguration.supportedVideoFormats.max {
+            $0.imageResolution.width * $0.imageResolution.height
+                < $1.imageResolution.width * $1.imageResolution.height
+        }
     }
 
     // MARK: Enregistrement
@@ -65,8 +90,105 @@ final class CaptureManager: NSObject, ObservableObject {
         if isRecording {
             frameBuffer.removeAll()
             lastCaptureTimestamp = 0
+            videoOutputURL = nil
         } else {
-            stopRecordingAndAnalyze()
+            finishWriting { [weak self] finishedVideoURL in
+                self?.videoOutputURL = finishedVideoURL
+                self?.stopRecordingAndAnalyze()
+            }
+        }
+    }
+
+    /// Crée l'`AVAssetWriter` dès la première image reçue après le début d'un enregistrement
+    /// (on a alors besoin des dimensions et du format de pixel réels du flux ARKit).
+    private func startWriting(for frame: ARFrame) {
+        let pixelBuffer = frame.capturedImage
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        let pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer)
+
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("mov")
+
+        guard let writer = try? AVAssetWriter(outputURL: outputURL, fileType: .mov) else {
+            debugLog("Impossible de créer l'AVAssetWriter")
+            return
+        }
+
+        let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: [
+            AVVideoCodecKey: AVVideoCodecType.hevc,
+            AVVideoWidthKey: width,
+            AVVideoHeightKey: height
+        ])
+        videoInput.expectsMediaDataInRealTime = true
+        // Le capteur ARKit filme nativement en paysage quelle que soit l'orientation de
+        // l'appareil (même correction que `CGImage.from(pixelBuffer:)` pour les photos) ; on
+        // l'exprime ici comme métadonnée de lecture plutôt qu'en pivotant chaque pixel.
+        videoInput.transform = CGAffineTransform(rotationAngle: .pi / 2)
+
+        guard writer.canAdd(videoInput) else {
+            debugLog("Impossible d'ajouter l'entrée vidéo à l'AVAssetWriter")
+            return
+        }
+        writer.add(videoInput)
+
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(
+            assetWriterInput: videoInput,
+            sourcePixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: pixelFormat]
+        )
+
+        let audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: 44_100,
+            AVNumberOfChannelsKey: 1
+        ])
+        audioInput.expectsMediaDataInRealTime = true
+        if writer.canAdd(audioInput) {
+            writer.add(audioInput)
+            self.audioWriterInput = audioInput
+        }
+
+        guard writer.startWriting() else {
+            debugLog("startWriting() a échoué : \(writer.error?.localizedDescription ?? "erreur inconnue")")
+            return
+        }
+        // Les timestamps ARKit (frame.timestamp) et ceux des CMSampleBuffer audio partagent la
+        // même horloge absolue : on démarre la session à l'heure réelle de la première image,
+        // ce qui garde vidéo et son synchronisés sans avoir à recaler manuellement chaque flux.
+        writer.startSession(atSourceTime: CMTime(seconds: frame.timestamp, preferredTimescale: 600))
+
+        self.assetWriter = writer
+        self.videoWriterInput = videoInput
+        self.pixelBufferAdaptor = adaptor
+        self.videoOutputURL = outputURL
+    }
+
+    private func appendVideoFrame(_ frame: ARFrame) {
+        guard let videoWriterInput, let pixelBufferAdaptor, videoWriterInput.isReadyForMoreMediaData else { return }
+        let presentationTime = CMTime(seconds: frame.timestamp, preferredTimescale: 600)
+        pixelBufferAdaptor.append(frame.capturedImage, withPresentationTime: presentationTime)
+    }
+
+    /// Finalise le fichier vidéo (asynchrone côté AVFoundation) avant de lancer l'analyse, pour
+    /// être certain que `videoOutputURL` pointe vers un fichier complet et lisible.
+    private func finishWriting(completion: @escaping (URL?) -> Void) {
+        guard let assetWriter, assetWriter.status == .writing else {
+            completion(nil)
+            return
+        }
+        let outputURL = videoOutputURL
+        videoWriterInput?.markAsFinished()
+        audioWriterInput?.markAsFinished()
+
+        assetWriter.finishWriting { [weak self] in
+            DispatchQueue.main.async {
+                self?.assetWriter = nil
+                self?.videoWriterInput = nil
+                self?.audioWriterInput = nil
+                self?.pixelBufferAdaptor = nil
+                completion(assetWriter.status == .completed ? outputURL : nil)
+            }
         }
     }
 
@@ -182,6 +304,11 @@ extension CaptureManager: ARSessionDelegate {
         guard frame.timestamp - lastCaptureTimestamp >= captureIntervalSeconds else { return }
         lastCaptureTimestamp = frame.timestamp
 
+        if assetWriter == nil {
+            startWriting(for: frame)
+        }
+        appendVideoFrame(frame)
+
         guard let cgImage = CGImage.from(pixelBuffer: frame.capturedImage) else { return }
         frameBuffer.append(
             CapturedFrame(
@@ -192,6 +319,11 @@ extension CaptureManager: ARSessionDelegate {
                 timestamp: frame.timestamp
             )
         )
+    }
+
+    func session(_ session: ARSession, didOutputAudioSampleBuffer audioSampleBuffer: CMSampleBuffer) {
+        guard isRecording, let audioWriterInput, audioWriterInput.isReadyForMoreMediaData else { return }
+        audioWriterInput.append(audioSampleBuffer)
     }
 }
 
