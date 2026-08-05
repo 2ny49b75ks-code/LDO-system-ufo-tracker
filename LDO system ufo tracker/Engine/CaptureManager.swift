@@ -13,6 +13,8 @@ import CoreImage
 import CoreImage.CIFilterBuiltins
 import UIKit
 
+private let sharedFrameConversionContext = CIContext(options: [.useSoftwareRenderer: false])
+
 /// Étape 1 : capture vidéo HD combinée à la profondeur LiDAR (résolution de profondeur maximale),
 /// puis extraction des 3 meilleures images (netteté + contraste + présence d'un objet en mouvement),
 /// sauvegarde sur l'appareil et sur iCloud (via Photos framework).
@@ -50,6 +52,7 @@ final class CaptureManager: NSObject, ObservableObject {
         session.delegate = self
         session.run(config, options: [.resetTracking, .removeExistingAnchors])
         lidarActive = true
+        NSLog("LDO_DEBUG configureMaximumLidar appelé, lidarActive=%@", String(lidarActive))
     }
 
     func configureHDVideo() {
@@ -61,6 +64,7 @@ final class CaptureManager: NSObject, ObservableObject {
 
     func toggleRecording() {
         isRecording.toggle()
+        NSLog("LDO_DEBUG toggleRecording -> isRecording=%@", String(isRecording))
         if isRecording {
             frameBuffer.removeAll()
             lastCaptureTimestamp = 0
@@ -81,8 +85,12 @@ final class CaptureManager: NSObject, ObservableObject {
         debugLog("Arrêt enregistrement, \(capturedFrames.count) frames capturées")
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self else { return }
+            guard let self else {
+                NSLog("LDO_DEBUG self est nil dans le bloc async, abandon")
+                return
+            }
 
+            NSLog("LDO_DEBUG Début analyse en arrière-plan")
             let windowFrames = self.extractMotionWindow(from: capturedFrames)
             let bestFrames = self.selectOptimalFrames(from: windowFrames, count: 3)
             let result = AnalysisEngine().analyze(frames: windowFrames, videoURL: capturedVideoURL)
@@ -156,8 +164,12 @@ final class CaptureManager: NSObject, ObservableObject {
     // MARK: Sauvegarde
 
     private func saveToDeviceAndICloud(video: URL?, photos: [CGImage]) {
+        NSLog("LDO_DEBUG saveToDeviceAndICloud appelé, %d photos, vidéo=%@", photos.count, video?.absoluteString ?? "nil")
         PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
-            guard status == .authorized else { return }
+            guard status == .authorized else {
+                NSLog("LDO_DEBUG Autorisation photothèque refusée, status=%d", status.rawValue)
+                return
+            }
             PHPhotoLibrary.shared().performChanges {
                 if let video {
                     PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: video)
