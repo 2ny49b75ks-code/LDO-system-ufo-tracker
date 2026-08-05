@@ -78,21 +78,32 @@ final class AnalysisEngine {
     private let soundClassifier = SoundClassifier()
     private let verdictCalculator = VerdictCalculator()
 
-    func analyze(frames: [CapturedFrame], videoURL: URL?) -> AnalysisSession {
+    /// `progress` est appelé après chaque étape terminée, avec la fraction complétée (0...1) et un
+    /// libellé décrivant l'étape suivante — utilisé par `SessionAnalyzer` pour afficher une
+    /// progression réelle pendant le calcul (onglets LIVE et Bibliothèque).
+    func analyze(frames: [CapturedFrame], videoURL: URL?, progress: ((Double, String) -> Void)? = nil) -> AnalysisSession {
         var session = AnalysisSession()
         session.timestamp = Date()
 
+        let totalSteps = 9.0
+        func report(_ completedSteps: Double, _ nextStepLabel: String) {
+            progress?(completedSteps / totalSteps, nextStepLabel)
+        }
+
+        report(0, "Détection du mouvement…")
         // Étape 2 : détection d'objet(s) en mouvement (voir MotionDetector.swift).
         let trackedObjects = motionDetector.detectMovingObjects(in: frames)
         let mainObject = trackedObjects.max(by: { $0.detections.count < $1.detections.count })
         let detections = mainObject?.detections ?? []
 
+        report(1, "Classification de la forme…")
         // Étape 3 : classification de forme heuristique + isolement de la zone lumineuse (voir ShapeClassifier.swift).
         let shape = shapeClassifier.classifyShape(detections: detections, frames: frames)
         session.shapeDescription = shape.label
         session.shapeConfidence = shape.confidence
         session.known3DModelURL = shapeClassifier.buildApproximate3DSilhouette(luminousRegion: shape.luminousRegion)
 
+        report(2, "Estimation de la distance…")
         // Étape 8 (avancée ici, voir DistanceEstimator.swift) : LiDAR direct si à portée (<8 m),
         // sinon triangulation angulaire à partir d'une taille réelle supposée selon la forme détectée.
         let dist = distanceEstimator.estimateDistanceAndAltitude(detections: detections, frames: frames, shapeLabel: shape.label)
@@ -102,6 +113,7 @@ final class AnalysisEngine {
         session.distanceMethod = dist.method
         let reliableDistance = dist.confidence > 0.3 ? dist.distanceMeters : nil
 
+        report(3, "Calcul de la trajectoire…")
         // Étape 4 : trajectoire réelle (angulaire, corrigée du mouvement de la caméra) + forces G
         // (voir TrajectoryCalculator.swift).
         let traj = trajectoryCalculator.computeTrajectory(detections: detections, frames: frames, estimatedDistanceMeters: reliableDistance)
@@ -114,6 +126,7 @@ final class AnalysisEngine {
         session.maxAngularAccelerationDegPerS2 = traj.maxAngularAccelerationDegPerS2
         session.curvatureEvents = traj.curvatureEvents
 
+        report(4, "Analyse de l'illumination…")
         // Étape 5 : illumination et couleur (voir IlluminationAnalyzer.swift), échantillonnée sur
         // plusieurs détections (max 8, pour limiter le coût de calcul du seuillage d'image).
         let sampledDetections = stride(from: 0, to: detections.count, by: max(1, detections.count / 8)).map { detections[$0] }
@@ -126,6 +139,7 @@ final class AnalysisEngine {
         session.illuminationColor = illum.colorGuess
         session.illuminationKelvin = illum.estimatedKelvin
 
+        report(5, "Calcul de la vitesse…")
         // Étape 6 : vitesse (voir SpeedCalculator.swift), dérivée de la même trajectoire angulaire.
         let speed = speedCalculator.estimateSpeed(trajectory: traj, distanceMeters: reliableDistance)
         session.estimatedSpeedKmh = speed.averageKmh
@@ -136,6 +150,7 @@ final class AnalysisEngine {
         session.speedComparisonLabel = speed.comparisonLabel
         session.maxLinearAccelerationMS2 = speed.maxAccelerationMS2
 
+        report(6, "Analyse du son…")
         // Étape 7 : son (voir SoundClassifier.swift). L'API SoundAnalysis est asynchrone ; on la
         // pont vers ce pipeline synchrone avec un sémaphore (acceptable ici car l'analyse tourne
         // déjà hors du fil principal, après l'enregistrement — voir CaptureManager).
@@ -150,6 +165,7 @@ final class AnalysisEngine {
         session.soundMatchedCategory = soundResult.matchedCategory
         session.soundConfidence = soundResult.confidence
 
+        report(7, "Calcul du verdict…")
         // Verdict final (voir VerdictCalculator.swift), avec la liste des facteurs affichée à l'utilisateur.
         // Calculé AVANT le rendu des incrustations ci-dessous : le logo LDO n'est dessiné que si le
         // verdict penche vers "OVNI" (voir OverlayRenderer.draw), donc verdictConfidencePercent doit
@@ -159,11 +175,17 @@ final class AnalysisEngine {
         session.verdictConfidencePercent = verdict.percent
         session.verdictFactors = verdict.factors
 
+        report(8, "Rendu des incrustations…")
         // Étape 9 + rendu final : incruste trajectoire rouge, date/heure, vitesse max, et le logo LDO
-        // conditionnel sur les 3 photos et sur la vidéo complète (voir OverlayRenderer.swift).
-        session.photosWithOverlays = frames.prefix(3).map { OverlayRenderer.draw(on: $0.image, session: session) }
+        // conditionnel sur les 3 meilleures photos (netteté + exposition, voir FrameQualityScorer)
+        // et sur la vidéo complète (voir OverlayRenderer.swift).
+        let bestFrames = frames
+            .sorted { FrameQualityScorer.score($0.image) > FrameQualityScorer.score($1.image) }
+            .prefix(3)
+        session.photosWithOverlays = bestFrames.map { OverlayRenderer.draw(on: $0.image, session: session) }
         session.videoURLWithOverlays = OverlayRenderer.exportVideoWithOverlays(sourceURL: videoURL, session: session)
 
+        report(9, "Terminé")
         return session
     }
 }

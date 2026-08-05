@@ -37,8 +37,9 @@ final class TrajectoryCalculator {
         // 1. Pour chaque détection, retrouver la pose caméra la plus proche en temps
         //    et convertir la position 2D (pixels/normalisé) en direction 3D réelle dans le ciel.
         let angularSamples: [AngularSample] = detections.compactMap { detection in
-            guard let frame = nearestFrame(to: detection.timestamp, in: frames) else { return nil }
-            let direction = rayDirection(for: detection.boundingBox, frame: frame)
+            guard let frame = nearestFrame(to: detection.timestamp, in: frames),
+                  let direction = rayDirection(for: detection.boundingBox, frame: frame)
+            else { return nil }
             return AngularSample(direction: direction, timestamp: detection.timestamp)
         }
         guard angularSamples.count >= 3 else {
@@ -91,8 +92,13 @@ final class TrajectoryCalculator {
 
     /// Convertit une boîte englobante (repère Vision, normalisé, origine bas-gauche) en une direction
     /// unitaire dans l'espace réel, en tenant compte de la focale (intrinsics) et de l'orientation
-    /// de la caméra au moment exact de la détection (cameraTransform).
-    private func rayDirection(for box: CGRect, frame: CapturedFrame) -> SIMD3<Double> {
+    /// de la caméra au moment exact de la détection (cameraTransform). Retourne `nil` si cette image
+    /// n'a pas de pose ARKit associée (vidéo importée depuis la bibliothèque) : dans ce cas, la
+    /// trajectoire ne peut être calculée que sur les points 2D à l'écran (voir `points2D`), pas en
+    /// direction réelle dans le ciel.
+    private func rayDirection(for box: CGRect, frame: CapturedFrame) -> SIMD3<Double>? {
+        guard let intrinsics = frame.intrinsics, let cameraTransform = frame.cameraTransform else { return nil }
+
         let imageWidth = Double(frame.image.width)
         let imageHeight = Double(frame.image.height)
 
@@ -100,10 +106,10 @@ final class TrajectoryCalculator {
         let pixelX = Double(centerNorm.x) * imageWidth
         let pixelY = (1.0 - Double(centerNorm.y)) * imageHeight   // Vision (bas-gauche) -> image (haut-gauche)
 
-        let fx = Double(frame.intrinsics.columns.0.x)
-        let fy = Double(frame.intrinsics.columns.1.y)
-        let cx = Double(frame.intrinsics.columns.2.x)
-        let cy = Double(frame.intrinsics.columns.2.y)
+        let fx = Double(intrinsics.columns.0.x)
+        let fy = Double(intrinsics.columns.1.y)
+        let cx = Double(intrinsics.columns.2.x)
+        let cy = Double(intrinsics.columns.2.y)
 
         // Direction dans le repère caméra (axe Z vers l'avant).
         let cameraSpace = SIMD3<Double>((pixelX - cx) / fx, (pixelY - cy) / fy, 1.0)
@@ -111,9 +117,9 @@ final class TrajectoryCalculator {
 
         // Rotation caméra -> monde, extraite de la pose ARKit à cet instant.
         let rotation = simd_double3x3(
-            SIMD3<Double>(Double(frame.cameraTransform.columns.0.x), Double(frame.cameraTransform.columns.0.y), Double(frame.cameraTransform.columns.0.z)),
-            SIMD3<Double>(Double(frame.cameraTransform.columns.1.x), Double(frame.cameraTransform.columns.1.y), Double(frame.cameraTransform.columns.1.z)),
-            SIMD3<Double>(Double(frame.cameraTransform.columns.2.x), Double(frame.cameraTransform.columns.2.y), Double(frame.cameraTransform.columns.2.z))
+            SIMD3<Double>(Double(cameraTransform.columns.0.x), Double(cameraTransform.columns.0.y), Double(cameraTransform.columns.0.z)),
+            SIMD3<Double>(Double(cameraTransform.columns.1.x), Double(cameraTransform.columns.1.y), Double(cameraTransform.columns.1.z)),
+            SIMD3<Double>(Double(cameraTransform.columns.2.x), Double(cameraTransform.columns.2.y), Double(cameraTransform.columns.2.z))
         )
         return simd_normalize(rotation * normalizedCameraSpace)
     }

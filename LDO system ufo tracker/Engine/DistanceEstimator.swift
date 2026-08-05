@@ -60,7 +60,8 @@ final class DistanceEstimator {
         guard apparentSizePixels > 0 else {
             return DistanceResult(distanceMeters: nil, altitudeMeters: nil, confidence: 0, method: "Taille apparente nulle")
         }
-        let focalLengthPixels = Double(frame.intrinsics.columns.0.x)
+        let focalLengthPixels = frame.intrinsics.map { Double($0.columns.0.x) }
+            ?? Self.estimatedFocalLengthPixels(imageWidth: frame.image.width)
         let estimatedDistance = (assumedSize * focalLengthPixels) / apparentSizePixels
         let altitude = altitudeFromDistance(estimatedDistance, frame: frame)
 
@@ -100,15 +101,29 @@ final class DistanceEstimator {
     // MARK: - Altitude
 
     /// Altitude approximative = distance × sin(angle d'élévation de la caméra), déduit de
-    /// l'orientation de la caméra (pose ARKit) au moment de la capture.
-    private func altitudeFromDistance(_ distance: Double, frame: CapturedFrame) -> Double {
+    /// l'orientation de la caméra (pose ARKit) au moment de la capture. `nil` si cette image n'a
+    /// pas de pose ARKit associée (vidéo importée depuis la bibliothèque) : l'angle d'élévation
+    /// n'est alors pas connu, donc l'altitude ne peut pas être estimée du tout (contrairement à la
+    /// distance, qui reste calculable par triangulation avec une focale supposée).
+    private func altitudeFromDistance(_ distance: Double, frame: CapturedFrame) -> Double? {
+        guard let cameraTransform = frame.cameraTransform else { return nil }
         let forward = SIMD3<Double>(
-            -Double(frame.cameraTransform.columns.2.x),
-            -Double(frame.cameraTransform.columns.2.y),
-            -Double(frame.cameraTransform.columns.2.z)
+            -Double(cameraTransform.columns.2.x),
+            -Double(cameraTransform.columns.2.y),
+            -Double(cameraTransform.columns.2.z)
         )
         let elevationRadians = asin(max(-1, min(1, forward.y)))
         return distance * sin(elevationRadians)
+    }
+
+    /// Sans intrinsèques ARKit (vidéo importée depuis la bibliothèque, sans métadonnées de pose),
+    /// on suppose un champ de vision horizontal typique de caméra arrière de smartphone (~60°) pour
+    /// pouvoir quand même produire une distance approximative — avec une confiance déjà volontairement
+    /// basse (voir `confidence` ci-dessus), cette hypothèse supplémentaire n'aggrave pas la fiabilité
+    /// affichée, juste sa marge d'erreur réelle.
+    private static func estimatedFocalLengthPixels(imageWidth: Int) -> Double {
+        let assumedHorizontalFOVRadians = 60.0 * Double.pi / 180
+        return Double(imageWidth) / (2 * tan(assumedHorizontalFOVRadians / 2))
     }
 }
 

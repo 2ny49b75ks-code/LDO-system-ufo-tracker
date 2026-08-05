@@ -9,32 +9,27 @@ import Combine
 import AVFoundation
 import CoreMedia
 import ARKit
-import Photos
 import CoreImage
-import CoreImage.CIFilterBuiltins
-import UIKit
 
-/// Étape 1 : capture vidéo HD combinée à la profondeur LiDAR (résolution de profondeur maximale),
-/// puis extraction des 3 meilleures images (netteté + contraste + présence d'un objet en mouvement),
-/// sauvegarde sur l'appareil et sur iCloud (via Photos framework).
+/// Étape 1 : capture vidéo HD combinée à la profondeur LiDAR (résolution de profondeur maximale).
+/// L'enregistrement se contente de sauvegarder la vidéo (sur l'appareil, sur iCloud, et dans la
+/// liste de l'onglet LIVE) — l'analyse est déclenchée séparément, à la demande, par
+/// `SessionAnalyzer` une fois l'utilisateur ayant choisi une vidéo à analyser.
 final class CaptureManager: NSObject, ObservableObject {
     let session = ARSession()
     @Published var isRecording = false
     @Published var lidarActive = false
-    @Published var finishedSession: AnalysisSession?
-    @Published var isAnalyzing = false
 
-    private var videoOutputURL: URL?
+    /// Injecté par la vue hôte : permet de sauvegarder l'enregistrement terminé pour qu'il
+    /// apparaisse dans la liste de l'onglet LIVE.
+    var recordingStore: RecordingStore?
+
     private var frameBuffer: [CapturedFrame] = []
-    private let quickMotionContext = CIContext()
-
-    private let analysisWindowSeconds: TimeInterval = 2.0
-    private let quickMotionThreshold: Double = 0.02
 
     // Limite la capture à ~12 images/seconde (au lieu des ~60 fps d'ARKit) : largement
-    // suffisant pour l'analyse de mouvement/trajectoire, et réduit nettement la charge
-    // mémoire/CPU pendant l'enregistrement — donc plus de fluidité côté UI. Le fichier vidéo
-    // enregistré (voir plus bas) suit la même cadence, cohérent avec ce compromis.
+    // suffisant pour l'analyse de mouvement/trajectoire ultérieure (pose ARKit sauvegardée par
+    // image, voir `storeRecording`), et réduit nettement la charge mémoire/CPU pendant
+    // l'enregistrement — donc plus de fluidité côté UI.
     private let captureIntervalSeconds: TimeInterval = 1.0 / 12.0
     private var lastCaptureTimestamp: TimeInterval = 0
 
@@ -44,6 +39,7 @@ final class CaptureManager: NSObject, ObservableObject {
     private var videoWriterInput: AVAssetWriterInput?
     private var audioWriterInput: AVAssetWriterInput?
     private var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor?
+    private var videoOutputURL: URL?
 
     // MARK: Configuration
 
@@ -93,8 +89,7 @@ final class CaptureManager: NSObject, ObservableObject {
             videoOutputURL = nil
         } else {
             finishWriting { [weak self] finishedVideoURL in
-                self?.videoOutputURL = finishedVideoURL
-                self?.stopRecordingAndAnalyze()
+                self?.storeRecording(videoURL: finishedVideoURL)
             }
         }
     }
@@ -192,107 +187,42 @@ final class CaptureManager: NSObject, ObservableObject {
         }
     }
 
-    private func stopRecordingAndAnalyze() {
-        // La session ARKit reste active : seul le drapeau `isRecording` contrôle la
-        // capture des frames, ce qui permet de relancer un enregistrement sans
-        // avoir à relancer (et donc perdre le suivi de) la session LiDAR.
-        isAnalyzing = true
+    // MARK: Sauvegarde (l'analyse se fait séparément, à la demande — voir SessionAnalyzer)
+
+    /// Déplace la vidéo terminée dans le stockage de l'onglet LIVE et enregistre, dans un fichier
+    /// annexe, la pose ARKit de chaque image capturée — nécessaire pour retrouver une trajectoire/
+    /// distance de bonne qualité au moment où l'utilisateur choisira d'analyser cette vidéo plus
+    /// tard (voir `RecordingStore`, `VideoFrameExtractor`).
+    private func storeRecording(videoURL: URL?) {
+        guard let videoURL, let recordingStore else { return }
 
         let capturedFrames = frameBuffer
-        let capturedVideoURL = videoOutputURL
+        let fileName = videoURL.lastPathComponent
+        let destinationURL = recordingStore.directory.appendingPathComponent(fileName)
 
-        debugLog("Arrêt enregistrement, \(capturedFrames.count) frames capturées")
-
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self else { return }
-
-            let windowFrames = self.extractMotionWindow(from: capturedFrames)
-            let bestFrames = self.selectOptimalFrames(from: windowFrames, count: 3)
-            let result = AnalysisEngine().analyze(frames: windowFrames, videoURL: capturedVideoURL)
-
-            DispatchQueue.main.async {
-                self.saveToDeviceAndICloud(video: capturedVideoURL, photos: bestFrames)
-                self.finishedSession = result
-                self.isAnalyzing = false
-            }
-        }
-    }
-
-    // MARK: Détection de mouvement
-
-    /// Isole la fenêtre de `analysisWindowSeconds` autour du premier mouvement détecté.
-    /// Sans mouvement détecté, on retombe sur les dernières secondes capturées.
-    private func extractMotionWindow(from frames: [CapturedFrame]) -> [CapturedFrame] {
-        guard frames.count >= 2, let lastTimestamp = frames.last?.timestamp else { return frames }
-
-        let motionIndex = (1..<frames.count).first {
-            quickMotionScore(previous: frames[$0 - 1].image, current: frames[$0].image) >= quickMotionThreshold
+        do {
+            try FileManager.default.moveItem(at: videoURL, to: destinationURL)
+        } catch {
+            debugLog("Échec du déplacement de la vidéo vers le stockage LIVE : \(error.localizedDescription)")
+            return
         }
 
-        guard let motionIndex else {
-            debugLog("Aucun mouvement détecté, repli sur les \(analysisWindowSeconds)s les plus récentes.")
-            return frames.filter { lastTimestamp - $0.timestamp <= analysisWindowSeconds }
+        var posesFileName: String?
+        let poses = capturedFrames.compactMap { frame -> PersistedFramePose? in
+            guard let transform = frame.cameraTransform, let intrinsics = frame.intrinsics else { return nil }
+            return PersistedFramePose(timestamp: frame.timestamp, transform: transform.flatColumns, intrinsics: intrinsics.flatColumns)
+        }
+        if !poses.isEmpty, let data = try? JSONEncoder().encode(poses) {
+            let posesFile = (fileName as NSString).deletingPathExtension + "-poses.json"
+            try? data.write(to: recordingStore.directory.appendingPathComponent(posesFile), options: .atomic)
+            posesFileName = posesFile
         }
 
-        let motionTimestamp = frames[motionIndex].timestamp
-        let halfWindow = analysisWindowSeconds / 2
-        debugLog("Mouvement détecté à t=\(motionTimestamp)")
-        return frames.filter { abs($0.timestamp - motionTimestamp) <= halfWindow }
-    }
+        recordingStore.add(videoFileName: fileName, posesFileName: posesFileName, createdAt: Date())
 
-    /// Score de mouvement rapide entre deux frames (différence moyenne de luminosité, 0…1).
-    private func quickMotionScore(previous: CGImage, current: CGImage) -> Double {
-        let diffFilter = CIFilter.differenceBlendMode()
-        diffFilter.inputImage = CIImage(cgImage: current)
-        diffFilter.backgroundImage = CIImage(cgImage: previous)
-        guard let diff = diffFilter.outputImage else { return 0 }
-
-        let averageFilter = CIFilter.areaAverage()
-        averageFilter.inputImage = diff
-        averageFilter.extent = diff.extent
-        guard let averaged = averageFilter.outputImage else { return 0 }
-
-        var pixel = [UInt8](repeating: 0, count: 4)
-        pixel.withUnsafeMutableBytes { rawPointer in
-            quickMotionContext.render(
-                averaged,
-                toBitmap: rawPointer.baseAddress!,
-                rowBytes: 4,
-                bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
-                format: .RGBA8,
-                colorSpace: CGColorSpaceCreateDeviceRGB()
-            )
-        }
-        let brightness = (Double(pixel[0]) + Double(pixel[1]) + Double(pixel[2])) / 3.0
-        return brightness / 255.0
-    }
-
-    /// Sélectionne les meilleures images selon la netteté et l'exposition (voir `FrameQualityScorer`).
-    private func selectOptimalFrames(from buffer: [CapturedFrame], count: Int) -> [CGImage] {
-        buffer
-            .map { ($0.image, FrameQualityScorer.score($0.image)) }
-            .sorted { $0.1 > $1.1 }
-            .prefix(count)
-            .map { $0.0 }
-    }
-
-    // MARK: Sauvegarde
-
-    private func saveToDeviceAndICloud(video: URL?, photos: [CGImage]) {
-        PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
-            guard status == .authorized else {
-                debugLog("Autorisation photothèque refusée, status=\(status.rawValue)")
-                return
-            }
-            PHPhotoLibrary.shared().performChanges {
-                if let video {
-                    PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: video)
-                }
-                for image in photos {
-                    PHAssetChangeRequest.creationRequestForAsset(from: UIImage(cgImage: image))
-                }
-            }
-        }
+        // Sauvegarde également dans Photos/iCloud, comme avant (vidéo brute — les photos avec
+        // incrustations ne sont générées qu'au moment de l'analyse, voir SessionAnalyzer).
+        PhotoLibrarySaver.saveVideo(at: destinationURL)
     }
 }
 

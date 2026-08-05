@@ -9,9 +9,12 @@ import SwiftUI
 
 @main
 struct LDO_system_ufo_trackerApp: App {
+    @StateObject private var recordingStore = RecordingStore()
+
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environmentObject(recordingStore)
         }
     }
 }
