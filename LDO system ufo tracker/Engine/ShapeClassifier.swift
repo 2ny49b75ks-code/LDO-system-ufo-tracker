@@ -52,6 +52,10 @@ final class ShapeClassifier {
 
         let ciImage = CIImage(cgImage: frame.image)
         let cropRect = pixelRect(for: detection.boundingBox, imageSize: CGSize(width: frame.image.width, height: frame.image.height))
+        // Une boîte de détection quasi nulle (suivi Vision dégradé) produit un recadrage d'étendue
+        // vide, dont le rendu Core Image plante sur du matériel réel (moteur Metal) — le simulateur
+        // (rendu logiciel) ne le révèle jamais. On écarte ces détections dégénérées en amont.
+        guard cropRect.width >= 2, cropRect.height >= 2, cropRect.intersects(ciImage.extent) else { return nil }
         let cropped = ciImage.cropped(to: cropRect)
 
         // Seuillage de luminosité : ne garde que les pixels significativement plus clairs que la
