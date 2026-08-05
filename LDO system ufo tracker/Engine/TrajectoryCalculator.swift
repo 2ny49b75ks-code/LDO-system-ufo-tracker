@@ -18,7 +18,7 @@ import CoreGraphics
 /// sa **direction angulaire réelle dans le ciel**, indépendante des tremblements de la main.
 ///
 /// La conversion en forces G "physiques" (m/s²) exige en plus une distance à l'objet.
-/// Cette distance étant une estimation faible (voir étape 8, hors portée LiDAR), le résultat
+/// Cette distance étant une estimation faible (triangulation angulaire, voir étape 8), le résultat
 /// en G est toujours accompagné d'un indice de confiance — jamais présenté comme une mesure certaine.
 final class TrajectoryCalculator {
 
@@ -247,7 +247,7 @@ final class TrajectoryCalculator {
 
         // Confiance : directement liée à la confiance de l'estimation de distance elle-même
         // (fournie par l'étape 8). Ici on plafonne prudemment car aucune mesure directe de distance
-        // n'est disponible pour un objet aérien lointain (hors portée LiDAR ~5 m).
+        // n'est disponible pour un objet aérien lointain (distance par triangulation uniquement).
         let confidence = 0.35
         return (g, confidence)
     }

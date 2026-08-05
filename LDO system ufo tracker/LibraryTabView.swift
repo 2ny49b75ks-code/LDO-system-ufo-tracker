@@ -41,7 +41,7 @@ struct LibraryTabView: View {
                         .font(.headline)
                         .multilineTextAlignment(.center)
 
-                    Text("Distance et altitude moins précises qu'un enregistrement LIVE (données LiDAR absentes d'une vidéo déjà filmée).")
+                    Text("Distance et altitude moins précises qu'un enregistrement LIVE (position de la caméra non disponible pour une vidéo déjà filmée).")
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)

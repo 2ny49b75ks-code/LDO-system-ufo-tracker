@@ -47,7 +47,7 @@ struct AnalysisSession: Identifiable, Equatable {
 
     var estimatedDistanceMeters: Double?
     var estimatedAltitudeMeters: Double?
-    var distanceConfidence: Double = 0       // faible, car sans référence LiDAR à cette distance
+    var distanceConfidence: Double = 0       // faible, car estimée par triangulation, pas mesurée
     var distanceMethod: String = ""
 
     var timestamp: Date = Date()
@@ -104,8 +104,8 @@ final class AnalysisEngine {
         session.known3DModelURL = shapeClassifier.buildApproximate3DSilhouette(luminousRegion: shape.luminousRegion)
 
         report(2, "Estimation de la distance…")
-        // Étape 8 (avancée ici, voir DistanceEstimator.swift) : LiDAR direct si à portée (<8 m),
-        // sinon triangulation angulaire à partir d'une taille réelle supposée selon la forme détectée.
+        // Étape 8 (avancée ici, voir DistanceEstimator.swift) : triangulation angulaire à partir
+        // d'une taille réelle supposée selon la forme détectée (pas de LiDAR, portée trop courte).
         let dist = distanceEstimator.estimateDistanceAndAltitude(detections: detections, frames: frames, shapeLabel: shape.label)
         session.estimatedDistanceMeters = dist.distanceMeters
         session.estimatedAltitudeMeters = dist.altitudeMeters

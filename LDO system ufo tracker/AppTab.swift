@@ -12,10 +12,10 @@ enum AppTab {
 }
 
 /// Barre d'en-tête commune aux deux onglets : logo/titre à gauche, sélecteur d'onglets
-/// (« en haut à droite ») à droite. `lidarActive` n'est renseigné que par l'onglet LIVE.
+/// (« en haut à droite ») à droite. `trackingActive` n'est renseigné que par l'onglet LIVE.
 struct AppTopBar: View {
     @Binding var selectedTab: AppTab
-    var lidarActive: Bool?
+    var trackingActive: Bool?
 
     var body: some View {
         HStack {
@@ -25,10 +25,10 @@ struct AppTopBar: View {
             Text("LDO")
                 .foregroundColor(.green)
                 .font(.headline)
-            if let lidarActive {
+            if let trackingActive {
                 Image(systemName: "dot.radiowaves.left.and.right")
-                    .foregroundColor(lidarActive ? .green : .red)
-                    .accessibilityLabel(lidarActive ? "LiDAR actif" : "LiDAR indisponible")
+                    .foregroundColor(trackingActive ? .green : .red)
+                    .accessibilityLabel(trackingActive ? "Suivi AR actif" : "Suivi AR indisponible")
             }
             Spacer(minLength: 8)
             tabSwitcher

@@ -48,7 +48,6 @@ enum VideoFrameExtractor {
                 let pose = nearestPose(to: t, in: poses)
                 frames.append(CapturedFrame(
                     image: cgImage,
-                    depthMap: nil,
                     cameraTransform: pose.flatMap { simd_float4x4(flatColumns: $0.transform) },
                     intrinsics: pose.flatMap { simd_float3x3(flatColumns: $0.intrinsics) },
                     timestamp: t

@@ -11,14 +11,20 @@ import CoreMedia
 import ARKit
 import CoreImage
 
-/// Étape 1 : capture vidéo HD combinée à la profondeur LiDAR (résolution de profondeur maximale).
-/// L'enregistrement se contente de sauvegarder la vidéo (sur l'appareil, sur iCloud, et dans la
-/// liste de l'onglet LIVE) — l'analyse est déclenchée séparément, à la demande, par
-/// `SessionAnalyzer` une fois l'utilisateur ayant choisi une vidéo à analyser.
+/// Étape 1 : capture vidéo HD via ARKit (position/orientation de caméra à chaque image, utilisées
+/// pour la triangulation angulaire — voir DistanceEstimator). L'enregistrement se contente de
+/// sauvegarder la vidéo (sur l'appareil, sur iCloud, et dans la liste de l'onglet LIVE) —
+/// l'analyse est déclenchée séparément, à la demande, par `SessionAnalyzer` une fois l'utilisateur
+/// ayant choisi une vidéo à analyser.
+///
+/// N'utilise PAS le LiDAR : sa portée réelle (~5-8 m) est bien trop courte pour des objets aériens
+/// observés à grande distance, donc la distance est toujours estimée par triangulation angulaire
+/// (taille réelle supposée selon la forme détectée). Bénéfice secondaire : ARWorldTrackingConfiguration
+/// fonctionne sur tout appareil compatible ARKit, pas seulement les iPhone équipés LiDAR (12 Pro+).
 final class CaptureManager: NSObject, ObservableObject {
     let session = ARSession()
     @Published var isRecording = false
-    @Published var lidarActive = false
+    @Published var trackingActive = false
 
     /// Injecté par la vue hôte : permet de sauvegarder l'enregistrement terminé pour qu'il
     /// apparaisse dans la liste de l'onglet LIVE.
@@ -50,15 +56,12 @@ final class CaptureManager: NSObject, ObservableObject {
 
     // MARK: Configuration
 
-    func configureMaximumLidar() {
-        guard ARWorldTrackingConfiguration.supportsSceneReconstruction(.meshWithClassification) else {
-            lidarActive = false
+    func configureARTracking() {
+        guard ARWorldTrackingConfiguration.isSupported else {
+            trackingActive = false
             return
         }
         let config = ARWorldTrackingConfiguration()
-        config.sceneReconstruction = .meshWithClassification
-        config.frameSemantics.insert(.sceneDepth)
-        config.frameSemantics.insert(.smoothedSceneDepth)
         config.providesAudioData = true
 
         // Résolution vidéo maximale disponible sur l'appareil (voir `configureHDVideo`) : on la
@@ -70,7 +73,7 @@ final class CaptureManager: NSObject, ObservableObject {
 
         session.delegate = self
         session.run(config, options: [.resetTracking, .removeExistingAnchors])
-        lidarActive = true
+        trackingActive = true
     }
 
     func configureHDVideo() {
@@ -259,7 +262,6 @@ extension CaptureManager: ARSessionDelegate {
         frameBuffer.append(
             CapturedFrame(
                 image: cgImage,
-                depthMap: frame.sceneDepth?.depthMap,
                 cameraTransform: frame.camera.transform,
                 intrinsics: frame.camera.intrinsics,
                 timestamp: frame.timestamp

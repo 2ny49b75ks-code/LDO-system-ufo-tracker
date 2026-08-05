@@ -9,8 +9,8 @@ import Combine
 import simd
 
 /// Une image capturée par l'onglet LIVE conserve sa pose ARKit (position + orientation de la
-/// caméra, matrice intrinsèque) dans ce fichier annexe au format JSON, à côté de la vidéo — la
-/// profondeur LiDAR n'est elle jamais persistée (trop volumineuse), voir `CapturedFrame`.
+/// caméra, matrice intrinsèque) dans ce fichier annexe au format JSON, à côté de la vidéo —
+/// nécessaire pour la triangulation angulaire même en ré-analyse différée, voir `CapturedFrame`.
 struct PersistedFramePose: Codable {
     let timestamp: Double
     let transform: [Float]     // simd_float4x4, colonnes concaténées (16 éléments)

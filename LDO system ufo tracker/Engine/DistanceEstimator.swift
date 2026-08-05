@@ -5,22 +5,20 @@
 // ============================================================
 
 import Foundation
-import CoreVideo
-import ARKit
+import CoreGraphics
+import simd
 
-/// Étape 8 : distance et hauteur de l'objet.
+/// Étape 8 : distance et hauteur de l'objet, par **triangulation angulaire** uniquement — pas de
+/// LiDAR, dont la portée réelle (~5-8 m) est bien trop courte pour un objet aérien observé à
+/// grande distance (le cas quasi systématique en observation de phénomène dans le ciel).
 ///
-/// DEUX MÉTHODES, SELON LA PORTÉE :
-/// 1. **LiDAR direct** (fiable, haute confiance) — valide seulement si l'objet est à moins de
-///    ~5-8 mètres de la caméra, portée réelle du capteur LiDAR de l'iPhone. Utile par exemple
-///    pour un objet manipulé de près, pas pour un objet dans le ciel.
-/// 2. **Triangulation angulaire** (estimation, confiance faible à modérée) — utilisée pour tout
-///    objet hors de portée LiDAR. Elle suppose une taille réelle probable de l'objet (déduite de
-///    la classification heuristique de forme, étape 3) et calcule la distance nécessaire pour
-///    que cette taille produise l'angle apparent mesuré à l'écran :
-///    distance = (taille réelle supposée × focale en pixels) / taille apparente en pixels.
-///    Cette méthode est intrinsèquement approximative : une erreur sur la taille réelle supposée
-///    se répercute directement et proportionnellement sur la distance estimée.
+/// La triangulation suppose une taille réelle probable de l'objet (déduite de la classification
+/// heuristique de forme, étape 3) et calcule la distance nécessaire pour que cette taille produise
+/// l'angle apparent mesuré à l'écran :
+/// distance = (taille réelle supposée × focale en pixels) / taille apparente en pixels.
+/// Cette méthode est intrinsèquement approximative : une erreur sur la taille réelle supposée
+/// se répercute directement et proportionnellement sur la distance estimée — d'où la confiance
+/// volontairement basse (voir `confidence` ci-dessous), affichée telle quelle à l'utilisateur.
 final class DistanceEstimator {
 
     /// Tailles réelles typiques (en mètres, plus grande dimension) utilisées comme hypothèse selon
@@ -44,14 +42,6 @@ final class DistanceEstimator {
             return DistanceResult(distanceMeters: nil, altitudeMeters: nil, confidence: 0, method: "Aucune donnée")
         }
 
-        // 1. Tentative LiDAR direct.
-        if let lidarDistance = directLidarDistance(box: midDetection.boundingBox, depthMap: frame.depthMap),
-           lidarDistance < 8.0 {
-            let altitude = altitudeFromDistance(lidarDistance, frame: frame)
-            return DistanceResult(distanceMeters: lidarDistance, altitudeMeters: altitude, confidence: 0.9, method: "Mesure LiDAR directe")
-        }
-
-        // 2. Repli sur la triangulation angulaire.
         let sizeRange = assumedSizes[shapeLabel] ?? 0.5...15
         let assumedSize = (sizeRange.lowerBound + sizeRange.upperBound) / 2
 
@@ -75,27 +65,6 @@ final class DistanceEstimator {
             confidence: confidence,
             method: "Triangulation angulaire (taille réelle supposée : \(String(format: "%.1f", assumedSize)) m)"
         )
-    }
-
-    // MARK: - LiDAR direct
-
-    private func directLidarDistance(box: CGRect, depthMap: CVPixelBuffer?) -> Double? {
-        guard let depthMap else { return nil }
-        CVPixelBufferLockBaseAddress(depthMap, .readOnly)
-        defer { CVPixelBufferUnlockBaseAddress(depthMap, .readOnly) }
-
-        let width = CVPixelBufferGetWidth(depthMap)
-        let height = CVPixelBufferGetHeight(depthMap)
-        let x = Int(box.midX * Double(width))
-        let y = Int((1 - box.midY) * Double(height))
-        guard x >= 0, x < width, y >= 0, y < height,
-              let base = CVPixelBufferGetBaseAddress(depthMap) else { return nil }
-
-        let bytesPerRow = CVPixelBufferGetBytesPerRow(depthMap)
-        let floatBuffer = base.assumingMemoryBound(to: Float32.self)
-        let value = floatBuffer[y * (bytesPerRow / MemoryLayout<Float32>.size) + x]
-        guard value.isFinite, value > 0 else { return nil }
-        return Double(value)
     }
 
     // MARK: - Altitude

@@ -13,7 +13,7 @@ import Foundation
 /// Pour obtenir une vitesse en km/h, il faut la distance à l'objet : v (m/s) = distance (m) × vitesse
 /// angulaire (rad/s). C'est pourquoi, comme pour les forces G, la vitesse en km/h n'est affichée
 /// qu'accompagnée d'un indice de confiance — jamais présentée comme une mesure certaine tant que la
-/// distance elle-même reste une estimation (hors portée LiDAR au-delà de ~5 m).
+/// distance elle-même reste une estimation (triangulation angulaire, pas de mesure directe).
 final class SpeedCalculator {
 
     /// Seuil en-dessous duquel l'objet est considéré comme stationnaire (dérive de trajectoire due

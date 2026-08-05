@@ -9,7 +9,7 @@ import ARKit
 import SceneKit
 
 /// Affiche en plein écran le flux caméra + AR d'une `ARSession` déjà démarrée ailleurs
-/// (voir `CaptureManager.configureMaximumLidar()`), sans créer ni gérer sa propre session.
+/// (voir `CaptureManager.configureARTracking()`), sans créer ni gérer sa propre session.
 ///
 /// Utilise `ARSCNView` plutôt que `ARView` (RealityKit) car le reste du pipeline LDO
 /// (voir `ShapeClassifier.buildApproximate3DSilhouette`) prévoit un usage ultérieur de
@@ -21,12 +21,12 @@ struct CameraPreviewView: UIViewRepresentable {
     func makeUIView(context: Context) -> ARSCNView {
         let view = ARSCNView()
         // Ne PAS appeler view.session.run(...) ici : la session est démarrée et configurée
-        // par CaptureManager (LiDAR, scene reconstruction) — cette vue ne fait qu'afficher
-        // la session existante, pour éviter de la redémarrer avec une config par défaut.
+        // par CaptureManager — cette vue ne fait qu'afficher la session existante, pour éviter
+        // de la redémarrer avec une config par défaut.
         view.session = session
         view.automaticallyUpdatesLighting = true
-        // Masque le maillage LiDAR par défaut : LDO affiche son propre overlay (trajectoire
-        // rouge, incrustations) via OverlayRenderer plutôt que la visualisation de maillage AR.
+        // Pas de visualisation de debug AR par défaut : LDO affiche son propre overlay
+        // (trajectoire rouge, incrustations) via OverlayRenderer.
         view.debugOptions = []
         return view
     }

@@ -6,10 +6,10 @@
 
 import SwiftUI
 
-/// Onglet LIVE : viseur caméra + LiDAR et bouton en forme de soucoupe volante qui déclenche
-/// l'enregistrement HD + capture de profondeur LiDAR maximale. L'enregistrement est seulement
-/// SAUVEGARDÉ (voir CaptureManager.storeRecording) — l'analyse se fait séparément, en choisissant
-/// la vidéo dans « Mes enregistrements ».
+/// Onglet LIVE : viseur caméra ARKit et bouton en forme de soucoupe volante qui déclenche
+/// l'enregistrement HD. L'enregistrement est seulement SAUVEGARDÉ (voir
+/// CaptureManager.storeRecording) — l'analyse se fait séparément, en choisissant la vidéo dans
+/// « Mes enregistrements ».
 struct LiveTabView: View {
     @ObservedObject var capture: CaptureManager
     @Binding var selectedTab: AppTab
@@ -21,7 +21,7 @@ struct LiveTabView: View {
                 .ignoresSafeArea()
 
             VStack {
-                AppTopBar(selectedTab: $selectedTab, lidarActive: capture.lidarActive)
+                AppTopBar(selectedTab: $selectedTab, trackingActive: capture.trackingActive)
 
                 Spacer()
 
@@ -47,8 +47,8 @@ struct LiveTabView: View {
             }
         }
         .onAppear {
-            // Démarrage automatique : LiDAR à force maximale + résolution vidéo HD
-            capture.configureMaximumLidar()
+            // Démarrage automatique : suivi ARKit + résolution vidéo HD
+            capture.configureARTracking()
             capture.configureHDVideo()
         }
         .sheet(isPresented: $showRecordings) {

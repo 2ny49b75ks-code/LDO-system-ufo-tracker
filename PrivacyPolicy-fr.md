@@ -24,7 +24,7 @@ Cette politique de confidentialité décrit comment l'application LDO — Détec
 | Vidéo et images (caméra) | Capture de l'objet observé et analyse (forme, trajectoire, vitesse, illumination) | Sur votre appareil, puis dans votre photothèque (appareil + iCloud si activé par vous) |
 | Son (microphone) | Analyse du son associé à la vidéo capturée | Traité localement, conservé uniquement dans le fichier vidéo enregistré dans votre photothèque |
 | Position approximative | Affichage de la trajectoire estimée sur une carte, dans la page de résultats | Traitée localement pour l'affichage de la carte ; non transmise à LDO ni à un tiers |
-| Données de profondeur LiDAR | Amélioration de l'estimation de distance à courte portée | Traitées localement, non conservées séparément de la vidéo |
+| Position et orientation de la caméra (ARKit) | Triangulation angulaire pour estimer la distance et la trajectoire réelle de l'objet | Traitées localement ; conservées uniquement dans le fichier annexe d'un enregistrement LIVE, pour permettre une ré-analyse ultérieure |
 
 Aucun compte utilisateur, aucune adresse courriel et aucun identifiant publicitaire ne sont
 collectés par l'Application elle-même.

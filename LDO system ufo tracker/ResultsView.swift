@@ -89,7 +89,7 @@ struct ResultsView: View {
     }
 
     private func distanceText() -> String {
-        guard let d = session.estimatedDistanceMeters else { return "Non déterminable (hors portée LiDAR)" }
+        guard let d = session.estimatedDistanceMeters else { return "Non déterminable (données insuffisantes)" }
         let alt = session.estimatedAltitudeMeters.map { " — Altitude estimée : \(Int($0)) m" } ?? ""
         return "\(Int(d)) m (confiance : \(Int(session.distanceConfidence * 100))% — \(session.distanceMethod))\(alt)"
     }
