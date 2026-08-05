@@ -53,6 +53,9 @@ final class CaptureManager: NSObject, ObservableObject {
     private var audioWriterInput: AVAssetWriterInput?
     private var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor?
     private var videoOutputURL: URL?
+    /// Contexte dédié au rehaussement faible luminosité de la vidéo écrite (voir
+    /// `LowLightEnhancer`/`appendVideoFrame`), séparé de celui de `CGImage.from`.
+    private let videoEnhanceContext = CIContext()
 
     // MARK: Configuration
 
@@ -173,10 +176,31 @@ final class CaptureManager: NSObject, ObservableObject {
         self.videoOutputURL = outputURL
     }
 
+    /// Écrit l'image dans le fichier vidéo, rehaussée si la scène est sombre (voir
+    /// `LowLightEnhancer`) — seule la vidéo écrite est modifiée, `frame.capturedImage` d'origine
+    /// reste inchangé pour tout le reste du pipeline (suivi ARKit, etc.).
     private func appendVideoFrame(_ frame: ARFrame) {
         guard let videoWriterInput, let pixelBufferAdaptor, videoWriterInput.isReadyForMoreMediaData else { return }
         let presentationTime = CMTime(seconds: frame.timestamp, preferredTimescale: 600)
-        pixelBufferAdaptor.append(frame.capturedImage, withPresentationTime: presentationTime)
+
+        let sourceImage = CIImage(cvPixelBuffer: frame.capturedImage)
+        let enhancement = LowLightEnhancer.enhanceIfDark(sourceImage, using: videoEnhanceContext)
+
+        guard enhancement.wasEnhanced,
+              let pool = pixelBufferAdaptor.pixelBufferPool
+        else {
+            pixelBufferAdaptor.append(frame.capturedImage, withPresentationTime: presentationTime)
+            return
+        }
+
+        var outputBuffer: CVPixelBuffer?
+        CVPixelBufferPoolCreatePixelBuffer(nil, pool, &outputBuffer)
+        guard let outputBuffer else {
+            pixelBufferAdaptor.append(frame.capturedImage, withPresentationTime: presentationTime)
+            return
+        }
+        videoEnhanceContext.render(enhancement.image, to: outputBuffer)
+        pixelBufferAdaptor.append(outputBuffer, withPresentationTime: presentationTime)
     }
 
     /// Finalise le fichier vidéo (asynchrone côté AVFoundation) avant de lancer l'analyse, pour
@@ -282,10 +306,13 @@ extension CGImage {
 
     /// Conversion utilitaire CVPixelBuffer (format YCbCr d'ARKit) -> CGImage, réorientée pour
     /// correspondre à l'orientation portrait de l'appareil (ARKit capture nativement en paysage,
-    /// quelle que soit l'orientation de l'UI, d'où l'image de travers sans cette correction).
+    /// quelle que soit l'orientation de l'UI, d'où l'image de travers sans cette correction), et
+    /// rehaussée automatiquement si la scène est sombre (voir `LowLightEnhancer`) — sert à la fois
+    /// au buffer d'analyse et de base aux photos (voir `PhotoComposer`).
     static func from(pixelBuffer: CVPixelBuffer) -> CGImage? {
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer).oriented(.right)
-        return conversionContext.createCGImage(ciImage, from: ciImage.extent)
+        let enhanced = LowLightEnhancer.enhanceIfDark(ciImage, using: conversionContext).image
+        return conversionContext.createCGImage(enhanced, from: enhanced.extent)
     }
 }
 

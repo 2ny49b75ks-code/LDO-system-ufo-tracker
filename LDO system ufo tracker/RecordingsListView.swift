@@ -10,6 +10,10 @@ import SwiftUI
 /// L'enregistrement ne déclenche plus l'analyse automatiquement : on choisit ici quelle vidéo
 /// analyser, et le calcul se lance à la demande.
 struct RecordingsListView: View {
+    /// Contrôlée par `LiveTabView` : permet de refermer cette liste (en plus du flux d'analyse
+    /// plein écran) en un seul geste quand l'utilisateur appuie sur « Nouvelle capture », pour
+    /// revenir directement à l'écran caméra plutôt que de laisser la liste ouverte en arrière-plan.
+    @Binding var isPresented: Bool
     @EnvironmentObject var recordingStore: RecordingStore
     @State private var analysisTarget: AnalysisTarget?
 
@@ -49,7 +53,12 @@ struct RecordingsListView: View {
             }
         }
         .fullScreenCover(item: $analysisTarget) { target in
-            VideoAnalysisFlow(videoURL: target.videoURL, poses: target.poses)
+            AnalysisFlowView(videoURL: target.videoURL, poses: target.poses) {
+                // « Nouvelle capture » : referme le flux d'analyse ET cette liste, pour revenir
+                // directement à l'écran caméra prêt à filmer.
+                analysisTarget = nil
+                isPresented = false
+            }
         }
     }
 }

@@ -176,13 +176,11 @@ final class AnalysisEngine {
         session.verdictFactors = verdict.factors
 
         report(8, "Rendu des incrustations…")
-        // Étape 9 + rendu final : incruste trajectoire rouge, date/heure, vitesse max, et le logo LDO
-        // conditionnel sur les 3 meilleures photos (netteté + exposition, voir FrameQualityScorer)
-        // et sur la vidéo complète (voir OverlayRenderer.swift).
-        let bestFrames = frames
-            .sorted { FrameQualityScorer.score($0.image) > FrameQualityScorer.score($1.image) }
-            .prefix(3)
-        session.photosWithOverlays = bestFrames.map { OverlayRenderer.draw(on: $0.image, session: session) }
+        // Étape 9 + rendu final : 3 photos (plan large, zoom auto maximum sur la cible, zoom fixe
+        // ×2 — voir PhotoComposer), incrustées de la trajectoire rouge, date/heure, vitesse max et
+        // du logo LDO conditionnel ; incrustations identiques sur la vidéo complète.
+        let photoSet = PhotoComposer.composePhotoSet(frames: frames, detections: detections)
+        session.photosWithOverlays = photoSet.map { OverlayRenderer.draw(on: $0, session: session) }
         session.videoURLWithOverlays = OverlayRenderer.exportVideoWithOverlays(sourceURL: videoURL, session: session)
 
         report(9, "Terminé")

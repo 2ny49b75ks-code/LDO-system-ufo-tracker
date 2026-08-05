@@ -52,7 +52,7 @@ struct LiveTabView: View {
             capture.configureHDVideo()
         }
         .sheet(isPresented: $showRecordings) {
-            RecordingsListView()
+            RecordingsListView(isPresented: $showRecordings)
         }
     }
 }

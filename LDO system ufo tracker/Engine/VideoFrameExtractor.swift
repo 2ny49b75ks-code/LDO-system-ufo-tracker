@@ -20,9 +20,14 @@ import simd
 /// `cameraTransform`/`intrinsics` restent `nil` — voir la dégradation gracieuse déjà prévue dans
 /// `TrajectoryCalculator` et `DistanceEstimator` pour ce cas.
 enum VideoFrameExtractor {
+    /// `timeRange` restreint l'extraction à un extrait de la vidéo (en secondes depuis le début) —
+    /// c'est le mécanisme derrière « choisir les 2 secondes à analyser » (voir `ClipTrimView`) :
+    /// on n'échantillonne et n'analyse jamais la vidéo entière, seulement l'extrait choisi. `nil`
+    /// couvre la vidéo entière (utilisé uniquement en secours, ex. vidéo trop courte pour 2s).
     static func extractFrames(
         from videoURL: URL,
         poses: [PersistedFramePose] = [],
+        timeRange: ClosedRange<Double>? = nil,
         maxFrames: Int = 240
     ) -> [CapturedFrame] {
         let asset = AVURLAsset(url: videoURL)
@@ -31,9 +36,15 @@ enum VideoFrameExtractor {
         let duration = asset.duration.seconds
         guard duration.isFinite, duration > 0 else { return [] }
 
+        let startTime = max(0, timeRange?.lowerBound ?? 0)
+        let endTime = min(duration, timeRange?.upperBound ?? duration)
+        guard endTime > startTime else { return [] }
+        let rangeDuration = endTime - startTime
+
         // Même cadence que la capture en direct (voir CaptureManager.captureIntervalSeconds), sauf
-        // pour les vidéos plus longues que ~20s où l'on espace davantage pour rester sous `maxFrames`.
-        let interval = max(1.0 / 12.0, duration / Double(maxFrames))
+        // pour un extrait plus long que ~20s où l'on espace davantage pour rester sous `maxFrames`
+        // (ne devrait normalement pas arriver avec un extrait de 2s).
+        let interval = max(1.0 / 12.0, rangeDuration / Double(maxFrames))
 
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
@@ -41,8 +52,8 @@ enum VideoFrameExtractor {
         generator.requestedTimeToleranceAfter = .zero
 
         var frames: [CapturedFrame] = []
-        var t = 0.0
-        while t < duration {
+        var t = startTime
+        while t < endTime {
             let time = CMTime(seconds: t, preferredTimescale: 600)
             if let cgImage = try? generator.copyCGImage(at: time, actualTime: nil) {
                 let pose = nearestPose(to: t, in: poses)

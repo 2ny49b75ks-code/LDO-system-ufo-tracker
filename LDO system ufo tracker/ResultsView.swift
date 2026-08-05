@@ -11,17 +11,33 @@ import MapKit
 /// plus le verdict final et le pourcentage de possibilité.
 struct ResultsView: View {
     let session: AnalysisSession
+    /// Remet l'app à zéro pour la prochaine capture — voir la demande de réinitialisation
+    /// automatique une fois le cycle capture + photos + analyse terminé.
+    var onFinished: () -> Void = {}
 
     var body: some View {
         NavigationView {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
 
-                    if let cg = session.photosWithOverlays.first {
-                        Image(decorative: cg, scale: 1)
-                            .resizable()
-                            .scaledToFit()
-                            .cornerRadius(12)
+                    if !session.photosWithOverlays.isEmpty {
+                        let labels = ["Plan large", "Zoom maximum sur la cible", "Zoom ×2"]
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(alignment: .top, spacing: 12) {
+                                ForEach(Array(session.photosWithOverlays.enumerated()), id: \.offset) { index, cg in
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Image(decorative: cg, scale: 1)
+                                            .resizable()
+                                            .scaledToFit()
+                                            .frame(width: 260)
+                                            .cornerRadius(12)
+                                        Text(index < labels.count ? labels[index] : "Photo \(index + 1)")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     Group {
@@ -81,6 +97,16 @@ struct ResultsView: View {
                     .padding()
                     .background(Color.green.opacity(0.08))
                     .cornerRadius(12)
+
+                    Button {
+                        onFinished()
+                    } label: {
+                        Text("Nouvelle capture")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.green)
+                    .padding(.top, 4)
                 }
                 .padding()
             }

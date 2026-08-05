@@ -17,13 +17,16 @@ final class SessionAnalyzer: ObservableObject {
     @Published private(set) var progress: Double = 0
     @Published private(set) var progressLabel: String = ""
 
-    func analyze(videoURL: URL, poses: [PersistedFramePose] = [], completion: @escaping (AnalysisSession) -> Void) {
+    /// `clipRange` : extrait de 2 secondes choisi par l'utilisateur (voir `ClipTrimView`) — seul cet
+    /// extrait est échantillonné et analysé, jamais la vidéo entière (voir `VideoFrameExtractor`).
+    /// La vidéo complète, elle, reste intacte pour la visualisation (`videoURLWithOverlays`).
+    func analyze(videoURL: URL, poses: [PersistedFramePose] = [], clipRange: ClosedRange<Double>? = nil, completion: @escaping (AnalysisSession) -> Void) {
         isAnalyzing = true
         progress = 0
         progressLabel = "Préparation de la vidéo…"
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let frames = VideoFrameExtractor.extractFrames(from: videoURL, poses: poses)
+            let frames = VideoFrameExtractor.extractFrames(from: videoURL, poses: poses, timeRange: clipRange)
 
             let result = AnalysisEngine().analyze(frames: frames, videoURL: videoURL) { fraction, label in
                 DispatchQueue.main.async {

@@ -82,7 +82,13 @@ struct LibraryTabView: View {
             }
         }
         .fullScreenCover(item: $analysisTarget) { target in
-            VideoAnalysisFlow(videoURL: target.videoURL, poses: target.poses)
+            AnalysisFlowView(videoURL: target.videoURL, poses: target.poses) {
+                // « Nouvelle capture » : referme le flux d'analyse et réinitialise l'état
+                // d'importation, prêt pour une prochaine vidéo.
+                analysisTarget = nil
+                pickerItem = nil
+                importErrorMessage = nil
+            }
         }
     }
 
