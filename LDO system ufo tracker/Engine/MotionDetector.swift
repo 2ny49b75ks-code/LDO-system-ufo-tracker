@@ -77,6 +77,51 @@ final class MotionDetector {
         return trackedObjects
     }
 
+    // MARK: - Détection alternative par luminosité (voir AnalysisEngine)
+
+    /// Détecte l'objet en cherchant directement, image par image, la zone la plus brillante —
+    /// plutôt que par différence de mouvement entre deux images consécutives. Bien plus fiable pour
+    /// le cas d'usage principal de LDO (un objet lumineux sur un ciel sombre) : ça fonctionne même
+    /// si l'appareil est tenu très stable ou si l'objet se déplace lentement à l'écran, deux cas où
+    /// la différence de mouvement entre images consécutives est trop faible pour être détectée.
+    /// Utilisée en priorité par `AnalysisEngine` ; la détection par mouvement (`detectMovingObjects`)
+    /// reste un repli pour les scènes à plus faible contraste (ex. observation de jour).
+    func detectByLuminosity(in frames: [CapturedFrame]) -> [TrackedObject] {
+        var detections: [Detection] = []
+        for frame in frames {
+            guard let box = brightestBoundingBox(in: frame.image) else { continue }
+            detections.append(Detection(boundingBox: box, timestamp: frame.timestamp))
+        }
+        guard detections.count >= 3 else { return [] }
+        return [TrackedObject(id: UUID(), detections: detections)]
+    }
+
+    /// Seuillage de luminosité (même recette contraste + gamma agressif que `motionMask`, mais
+    /// appliquée directement à l'image plutôt qu'à une différence entre deux images), puis retient
+    /// le plus grand contour brillant plausible — pas trop petit (bruit), pas trop grand
+    /// (surexposition globale plutôt qu'une source ponctuelle).
+    private func brightestBoundingBox(in image: CGImage) -> CGRect? {
+        let ciImage = CIImage(cgImage: image)
+
+        let grayFilter = CIFilter.colorControls()
+        grayFilter.inputImage = ciImage
+        grayFilter.saturation = 0
+        grayFilter.contrast = 3.0
+        guard let gray = grayFilter.outputImage else { return nil }
+
+        let gammaFilter = CIFilter.gammaAdjust()
+        gammaFilter.inputImage = gray
+        gammaFilter.power = 6.0
+        guard let thresholded = gammaFilter.outputImage else { return nil }
+
+        let mask = thresholded.clampedToExtent().cropped(to: ciImage.extent)
+
+        let candidates = detectContourBoundingBoxes(in: mask)
+            .filter { $0.width * $0.height >= minimumBlobArea && $0.width * $0.height <= maximumBlobArea }
+
+        return candidates.max { $0.width * $0.height < $1.width * $1.height }
+    }
+
     // MARK: - 1 & 2. Masque de mouvement
 
     private func motionMask(previous: CGImage, current: CGImage) -> CIImage? {

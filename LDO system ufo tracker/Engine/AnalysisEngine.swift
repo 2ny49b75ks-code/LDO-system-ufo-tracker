@@ -90,9 +90,19 @@ final class AnalysisEngine {
             progress?(completedSteps / totalSteps, nextStepLabel)
         }
 
-        report(0, "Détection du mouvement…")
-        // Étape 2 : détection d'objet(s) en mouvement (voir MotionDetector.swift).
-        let trackedObjects = motionDetector.detectMovingObjects(in: frames)
+        report(0, "Détection de l'objet…")
+        // Étape 2 : détection de l'objet. On commence par un seuillage de luminosité (voir
+        // MotionDetector.detectByLuminosity) — bien plus fiable pour le cas d'usage principal de
+        // LDO (objet lumineux sur ciel sombre) qu'une différence de mouvement entre deux images,
+        // qui exige un déplacement net et peut manquer un objet lointain ou lent. On ne retombe
+        // sur la détection par mouvement que si la luminosité seule n'a rien isolé (ex. scène de
+        // jour, plus faible contraste).
+        var trackedObjects = motionDetector.detectByLuminosity(in: frames)
+        debugLog("détection par luminosité : \(trackedObjects.first?.detections.count ?? 0) détection(s) sur \(frames.count) image(s)")
+        if trackedObjects.isEmpty {
+            trackedObjects = motionDetector.detectMovingObjects(in: frames)
+            debugLog("repli détection par mouvement : \(trackedObjects.first?.detections.count ?? 0) détection(s)")
+        }
         let mainObject = trackedObjects.max(by: { $0.detections.count < $1.detections.count })
         let detections = mainObject?.detections ?? []
 
@@ -186,6 +196,13 @@ final class AnalysisEngine {
         report(9, "Terminé")
         return session
     }
+}
+
+/// Log de debug actif uniquement en build Debug (aucun coût en production).
+private func debugLog(_ message: @autoclosure () -> String) {
+    #if DEBUG
+    print("LDO_DEBUG \(message())")
+    #endif
 }
 struct Detection {
     var boundingBox: CGRect
