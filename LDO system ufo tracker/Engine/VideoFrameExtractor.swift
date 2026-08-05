@@ -31,10 +31,31 @@ enum VideoFrameExtractor {
         maxFrames: Int = 240
     ) -> [CapturedFrame] {
         let asset = AVURLAsset(url: videoURL)
-        guard asset.tracks(withMediaType: .video).first != nil else { return [] }
 
-        let duration = asset.duration.seconds
-        guard duration.isFinite, duration > 0 else { return [] }
+        // Chargement asynchrone (API moderne) plutôt que les propriétés synchrones dépréciées
+        // (`asset.tracks`, `asset.duration`) : sur un fichier fraîchement copié — le cas exact
+        // d'une vidéo importée depuis la bibliothèque — les propriétés synchrones peuvent renvoyer
+        // une durée à zéro avant que les métadonnées soient réellement chargées, ce qui faisait
+        // échouer silencieusement toute l'extraction (aucune image, donc aucun résultat d'analyse).
+        // Pont synchrone par sémaphore, dans le même esprit que SoundClassifier/OverlayRenderer.
+        let semaphore = DispatchSemaphore(value: 0)
+        var hasVideoTrack = false
+        var duration: Double = 0
+        Task {
+            hasVideoTrack = ((try? await asset.loadTracks(withMediaType: .video).first) ?? nil) != nil
+            duration = (try? await asset.load(.duration).seconds) ?? 0
+            semaphore.signal()
+        }
+        _ = semaphore.wait(timeout: .now() + 15)
+
+        guard hasVideoTrack else {
+            debugLog("extractFrames : aucune piste vidéo trouvée pour \(videoURL.lastPathComponent)")
+            return []
+        }
+        guard duration.isFinite, duration > 0 else {
+            debugLog("extractFrames : durée invalide (\(duration)) pour \(videoURL.lastPathComponent)")
+            return []
+        }
 
         let startTime = max(0, timeRange?.lowerBound ?? 0)
         let endTime = min(duration, timeRange?.upperBound ?? duration)
@@ -48,14 +69,22 @@ enum VideoFrameExtractor {
 
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
-        generator.requestedTimeToleranceBefore = .zero
-        generator.requestedTimeToleranceAfter = .zero
+        // Tolérance égale à la moitié de l'intervalle d'échantillonnage plutôt que zéro : exiger un
+        // positionnement image-exacte est plus lent ET plus susceptible d'échouer silencieusement
+        // (`try?` ci-dessous) sur une vidéo externe dont la structure d'encodage (images-clés, etc.)
+        // est inconnue — contrairement à nos propres enregistrements LIVE, toujours dans le même
+        // format. Cette tolérance n'a aucun impact réel sur l'analyse (mouvement échantillonné
+        // toutes les ~1/12s de toute façon).
+        let tolerance = CMTime(seconds: interval / 2, preferredTimescale: 600)
+        generator.requestedTimeToleranceBefore = tolerance
+        generator.requestedTimeToleranceAfter = tolerance
 
         var frames: [CapturedFrame] = []
         var t = startTime
         while t < endTime {
             let time = CMTime(seconds: t, preferredTimescale: 600)
-            if let cgImage = try? generator.copyCGImage(at: time, actualTime: nil) {
+            do {
+                let cgImage = try generator.copyCGImage(at: time, actualTime: nil)
                 let pose = nearestPose(to: t, in: poses)
                 frames.append(CapturedFrame(
                     image: cgImage,
@@ -63,9 +92,12 @@ enum VideoFrameExtractor {
                     intrinsics: pose.flatMap { simd_float3x3(flatColumns: $0.intrinsics) },
                     timestamp: t
                 ))
+            } catch {
+                debugLog("extractFrames : échec à t=\(t) — \(error.localizedDescription)")
             }
             t += interval
         }
+        debugLog("extractFrames : \(frames.count) image(s) extraite(s) de \(videoURL.lastPathComponent) (\(startTime)s–\(endTime)s)")
         return frames
     }
 
@@ -73,4 +105,11 @@ enum VideoFrameExtractor {
         guard !poses.isEmpty else { return nil }
         return poses.min { abs($0.timestamp - timestamp) < abs($1.timestamp - timestamp) }
     }
+}
+
+/// Log de debug actif uniquement en build Debug (aucun coût en production).
+private func debugLog(_ message: @autoclosure () -> String) {
+    #if DEBUG
+    print("LDO_DEBUG \(message())")
+    #endif
 }
