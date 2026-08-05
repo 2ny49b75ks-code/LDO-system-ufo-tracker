@@ -26,12 +26,19 @@ final class CaptureManager: NSObject, ObservableObject {
 
     private var frameBuffer: [CapturedFrame] = []
 
-    // Limite la capture à ~12 images/seconde (au lieu des ~60 fps d'ARKit) : largement
-    // suffisant pour l'analyse de mouvement/trajectoire ultérieure (pose ARKit sauvegardée par
-    // image, voir `storeRecording`), et réduit nettement la charge mémoire/CPU pendant
-    // l'enregistrement — donc plus de fluidité côté UI.
+    // Cadence du buffer d'ANALYSE (pose ARKit + image en mémoire, voir `storeRecording`) : ~12
+    // images/seconde suffit largement pour le mouvement/la trajectoire (l'analyse ré-échantillonne
+    // de toute façon la vidéo à sa propre cadence fixe, voir `VideoFrameExtractor` — indépendante
+    // de la cadence d'enregistrement ci-dessous). Volontairement plus faible que la vidéo pour
+    // limiter la mémoire pendant l'enregistrement.
     private let captureIntervalSeconds: TimeInterval = 1.0 / 12.0
     private var lastCaptureTimestamp: TimeInterval = 0
+
+    // Cadence du FICHIER VIDÉO écrit sur le disque : 30 images/seconde pour une lecture fluide,
+    // indépendante du buffer d'analyse ci-dessus (l'écriture vidéo est un simple encodage matériel
+    // HEVC, sans coût pour l'analyse).
+    private let videoFrameIntervalSeconds: TimeInterval = 1.0 / 30.0
+    private var lastVideoFrameTimestamp: TimeInterval = 0
 
     // MARK: Écriture du fichier vidéo (AVAssetWriter)
 
@@ -86,6 +93,7 @@ final class CaptureManager: NSObject, ObservableObject {
         if isRecording {
             frameBuffer.removeAll()
             lastCaptureTimestamp = 0
+            lastVideoFrameTimestamp = 0
             videoOutputURL = nil
         } else {
             finishWriting { [weak self] finishedVideoURL in
@@ -114,7 +122,10 @@ final class CaptureManager: NSObject, ObservableObject {
         let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: [
             AVVideoCodecKey: AVVideoCodecType.hevc,
             AVVideoWidthKey: width,
-            AVVideoHeightKey: height
+            AVVideoHeightKey: height,
+            AVVideoCompressionPropertiesKey: [
+                AVVideoExpectedSourceFrameRateKey: Int(1.0 / videoFrameIntervalSeconds)
+            ]
         ])
         videoInput.expectsMediaDataInRealTime = true
         // Le capteur ARKit filme nativement en paysage quelle que soit l'orientation de
@@ -230,14 +241,19 @@ extension CaptureManager: ARSessionDelegate {
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
         guard isRecording else { return }
 
-        // Throttle : au plus une frame gardée toutes les `captureIntervalSeconds`.
+        // Vidéo : cadence dédiée (~30 fps), indépendante du buffer d'analyse ci-dessous.
+        if frame.timestamp - lastVideoFrameTimestamp >= videoFrameIntervalSeconds {
+            lastVideoFrameTimestamp = frame.timestamp
+            if assetWriter == nil {
+                startWriting(for: frame)
+            }
+            appendVideoFrame(frame)
+        }
+
+        // Analyse : throttle plus large (~12 fps), au plus une frame gardée toutes les
+        // `captureIntervalSeconds`.
         guard frame.timestamp - lastCaptureTimestamp >= captureIntervalSeconds else { return }
         lastCaptureTimestamp = frame.timestamp
-
-        if assetWriter == nil {
-            startWriting(for: frame)
-        }
-        appendVideoFrame(frame)
 
         guard let cgImage = CGImage.from(pixelBuffer: frame.capturedImage) else { return }
         frameBuffer.append(
