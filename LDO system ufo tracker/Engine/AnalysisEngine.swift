@@ -109,8 +109,12 @@ final class AnalysisEngine {
                 debugLog("repli détection par mouvement : \(trackedObjects.first?.detections.count ?? 0) détection(s)")
             }
         case .day:
-            trackedObjects = motionDetector.detectMovingObjects(in: frames)
-            debugLog("détection par mouvement (mode jour) : \(trackedObjects.first?.detections.count ?? 0) détection(s)")
+            trackedObjects = motionDetector.detectDarkObjectOnBrightSky(in: frames)
+            debugLog("détection silhouette sombre sur ciel clair (mode jour) : \(trackedObjects.first?.detections.count ?? 0) détection(s)")
+            if trackedObjects.isEmpty {
+                trackedObjects = motionDetector.detectMovingObjects(in: frames)
+                debugLog("repli détection par mouvement (mode jour) : \(trackedObjects.first?.detections.count ?? 0) détection(s)")
+            }
         }
         let mainObject = trackedObjects.max(by: { $0.detections.count < $1.detections.count })
         let detections = mainObject?.detections ?? []

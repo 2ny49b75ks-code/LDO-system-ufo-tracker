@@ -24,9 +24,11 @@ final class MotionDetector {
     private let sequenceHandler = VNSequenceRequestHandler()
 
     /// Surface minimale (en proportion de l'image, 0 à 1) pour qu'une zone en mouvement
-    /// soit considérée comme un objet plausible et non du bruit vidéo (grain, compression, insectes sur l'objectif très proches).
-    private let minimumBlobArea: CGFloat = 0.0006   // ≈ un carré de 25x25 px sur une image 1024x1024
-    private let maximumBlobArea: CGFloat = 0.35     // évite de suivre un nuage entier ou un changement d'exposition global
+    /// soit considérée comme un objet plausible et non du bruit vidéo (grain, compression capteur).
+    /// Volontairement petit : un point lumineux distant (le cas typique d'une observation réelle)
+    /// peut ne faire que quelques pixels de large — un seuil trop élevé le rejetterait comme "bruit".
+    private let minimumBlobArea: CGFloat = 0.00004   // ≈ un carré de 6x6 px sur une image 1024x1024
+    private let maximumBlobArea: CGFloat = 0.35      // évite de suivre un nuage entier ou un changement d'exposition global
 
     /// Détecte les objets en mouvement sur l'ensemble de la séquence capturée.
     /// Retourne, pour chaque objet suivi, la liste chronologique de ses détections (utilisée
@@ -97,8 +99,28 @@ final class MotionDetector {
         guard isDarkScene(frames) else { return [] }
 
         var detections: [Detection] = []
+        var previousCenter: CGPoint?
         for frame in frames {
-            guard let box = brightestBoundingBox(in: frame.image) else { continue }
+            guard let box = brightestBoundingBox(in: frame.image, previousCenter: previousCenter) else { continue }
+            detections.append(Detection(boundingBox: box, timestamp: frame.timestamp))
+            previousCenter = CGPoint(x: box.midX, y: box.midY)
+        }
+        guard detections.count >= 3 else { return [] }
+        return [TrackedObject(id: UUID(), detections: detections)]
+    }
+
+    /// Détection « mode Jour » : symétrique de `detectByLuminosity`, mais pour un objet qui apparaît
+    /// SOMBRE (silhouette à contre-jour) sur un ciel clair de jour, plutôt que lumineux sur fond
+    /// sombre. Même principe de seuil adaptatif, inversé.
+    ///
+    /// NE S'ACTIVE QUE SUR UNE SCÈNE GLOBALEMENT CLAIRE (ciel de jour) — symétrique du garde-fou de
+    /// `detectByLuminosity`.
+    func detectDarkObjectOnBrightSky(in frames: [CapturedFrame]) -> [TrackedObject] {
+        guard isBrightScene(frames) else { return [] }
+
+        var detections: [Detection] = []
+        for frame in frames {
+            guard let box = darkestBoundingBox(in: frame.image) else { continue }
             detections.append(Detection(boundingBox: box, timestamp: frame.timestamp))
         }
         guard detections.count >= 3 else { return [] }
@@ -107,12 +129,23 @@ final class MotionDetector {
 
     /// Échantillonne quelques images pour estimer si la scène est globalement sombre.
     private func isDarkScene(_ frames: [CapturedFrame]) -> Bool {
-        guard !frames.isEmpty else { return false }
+        guard let mean = meanSampledLuminance(frames) else { return false }
+        return mean < darkSceneThreshold
+    }
+
+    /// Échantillonne quelques images pour estimer si la scène est globalement claire (ciel de jour).
+    private func isBrightScene(_ frames: [CapturedFrame]) -> Bool {
+        guard let mean = meanSampledLuminance(frames) else { return false }
+        return mean >= darkSceneThreshold
+    }
+
+    private func meanSampledLuminance(_ frames: [CapturedFrame]) -> Double? {
+        guard !frames.isEmpty else { return nil }
         let step = max(1, frames.count / 5)
         let sampledIndices = stride(from: 0, to: frames.count, by: step)
         let averages = sampledIndices.compactMap { averageLuminance(of: frames[$0].image) }
-        guard !averages.isEmpty else { return false }
-        return (averages.reduce(0, +) / Double(averages.count)) < darkSceneThreshold
+        guard !averages.isEmpty else { return nil }
+        return averages.reduce(0, +) / Double(averages.count)
     }
 
     private func averageLuminance(of image: CGImage) -> Double? {
@@ -130,30 +163,110 @@ final class MotionDetector {
         return (Double(pixel[0]) + Double(pixel[1]) + Double(pixel[2])) / 3.0
     }
 
-    /// Seuillage de luminosité (même recette contraste + gamma agressif que `motionMask`, mais
-    /// appliquée directement à l'image plutôt qu'à une différence entre deux images), puis retient
-    /// le plus grand contour brillant plausible — pas trop petit (bruit), pas trop grand
-    /// (surexposition globale plutôt qu'une source ponctuelle).
-    private func brightestBoundingBox(in image: CGImage) -> CGRect? {
+    /// Seuillage ADAPTATIF (pas un seuil fixe) : calculé à mi-chemin entre la luminosité moyenne et
+    /// maximale de CHAQUE image. Un seuil fixe agressif (l'ancienne approche, contraste + gamma^6)
+    /// écrase à zéro un point lumineux seulement modérément plus brillant que le ciel environnant —
+    /// le cas typique d'une vraie observation (étoile ou point lointain, pas une source aveuglante).
+    /// En se calant sur l'écart RÉEL entre le fond et le point le plus clair de l'image, ce seuil
+    /// s'ajuste aussi bien à un point très brillant qu'à un point seulement un peu plus clair que
+    /// son environnement.
+    /// `previousCenter`, quand disponible, favorise le candidat le plus proche de la détection de
+    /// l'image précédente plutôt que systématiquement le plus grand blob de l'image courante — un
+    /// point lumineux distant scintille légèrement (bruit capteur, seuil adaptatif qui varie d'une
+    /// image à l'autre) : sans cette continuité, la détection peut « sauter » d'une image à l'autre
+    /// vers un blob de bruit différent, ce qui produit une trajectoire artificiellement saccadée et
+    /// donc une vitesse calculée bien plus élevée et bruitée que le déplacement réel (typiquement
+    /// lent) de l'objet observé.
+    private func brightestBoundingBox(in image: CGImage, previousCenter: CGPoint?) -> CGRect? {
         let ciImage = CIImage(cgImage: image)
+        guard let threshold = adaptiveBrightnessThreshold(ciImage) else { return nil }
 
-        let grayFilter = CIFilter.colorControls()
-        grayFilter.inputImage = ciImage
-        grayFilter.saturation = 0
-        grayFilter.contrast = 3.0
-        guard let gray = grayFilter.outputImage else { return nil }
+        guard let thresholdFilter = CIFilter(name: "CIColorThreshold") else { return nil }
+        thresholdFilter.setValue(ciImage, forKey: kCIInputImageKey)
+        thresholdFilter.setValue(Float(threshold), forKey: "inputThreshold")
+        guard let mask = thresholdFilter.outputImage else { return nil }
 
-        let gammaFilter = CIFilter.gammaAdjust()
-        gammaFilter.inputImage = gray
-        gammaFilter.power = 6.0
-        guard let thresholded = gammaFilter.outputImage else { return nil }
+        let candidates = detectContourBoundingBoxes(in: mask)
+            .filter { $0.width * $0.height >= minimumBlobArea && $0.width * $0.height <= maximumBlobArea }
+        guard !candidates.isEmpty else { return nil }
 
-        let mask = thresholded.clampedToExtent().cropped(to: ciImage.extent)
+        if let previousCenter {
+            // Rayon de recherche généreux (10% de la diagonale normalisée) : suffisant pour suivre un
+            // déplacement réel image à image, mais assez serré pour ignorer un nouveau blob de bruit
+            // apparu ailleurs dans le ciel.
+            let maxTrackingDistance: CGFloat = 0.1
+            let nearby = candidates.filter { candidate in
+                let center = CGPoint(x: candidate.midX, y: candidate.midY)
+                let dx = center.x - previousCenter.x
+                let dy = center.y - previousCenter.y
+                return (dx * dx + dy * dy).squareRoot() <= maxTrackingDistance
+            }
+            if let closest = nearby.min(by: { distanceSquared($0, to: previousCenter) < distanceSquared($1, to: previousCenter) }) {
+                return closest
+            }
+        }
+
+        // Pas de détection précédente (première image) ou rien à proximité (objet réapparu ailleurs) :
+        // repli sur le plus grand blob, comme avant.
+        return candidates.max { $0.width * $0.height < $1.width * $1.height }
+    }
+
+    private func distanceSquared(_ box: CGRect, to point: CGPoint) -> CGFloat {
+        let dx = box.midX - point.x
+        let dy = box.midY - point.y
+        return dx * dx + dy * dy
+    }
+
+    private func adaptiveBrightnessThreshold(_ image: CIImage) -> Double? {
+        guard let avg = luminanceStat(image, filterName: "CIAreaAverage"),
+              let max = luminanceStat(image, filterName: "CIAreaMaximum"),
+              max > avg
+        else { return nil }
+        // À mi-chemin entre le fond et le point le plus clair : capte le point lumineux dominant
+        // sans dépendre de sa luminosité absolue.
+        return avg + 0.5 * (max - avg)
+    }
+
+    /// Luminosité (moyenne ou maximale selon `filterName`), normalisée 0...1 pour `CIColorThreshold`.
+    private func luminanceStat(_ image: CIImage, filterName: String) -> Double? {
+        guard let filter = CIFilter(name: filterName) else { return nil }
+        filter.setValue(image, forKey: kCIInputImageKey)
+        filter.setValue(CIVector(cgRect: image.extent), forKey: kCIInputExtentKey)
+        guard let output = filter.outputImage else { return nil }
+        var pixel = [UInt8](repeating: 0, count: 4)
+        ciContext.render(
+            output, toBitmap: &pixel, rowBytes: 4,
+            bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+            format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB()
+        )
+        let luminance = 0.299 * Double(pixel[0]) + 0.587 * Double(pixel[1]) + 0.114 * Double(pixel[2])
+        return luminance / 255.0
+    }
+
+    /// Symétrique de `brightestBoundingBox` pour le mode Jour : au lieu de chercher un seuil adaptatif
+    /// sur l'image telle quelle, on l'applique sur son NÉGATIF — ainsi la silhouette sombre de l'objet
+    /// (la partie la plus foncée du ciel clair) devient la région la plus « brillante » sur l'image
+    /// inversée, et on réutilise exactement la même logique de seuillage adaptatif que la nuit.
+    private func darkestBoundingBox(in image: CGImage) -> CGRect? {
+        let ciImage = CIImage(cgImage: image)
+        guard let inverted = invertedImage(ciImage) else { return nil }
+        guard let threshold = adaptiveBrightnessThreshold(inverted) else { return nil }
+
+        guard let thresholdFilter = CIFilter(name: "CIColorThreshold") else { return nil }
+        thresholdFilter.setValue(inverted, forKey: kCIInputImageKey)
+        thresholdFilter.setValue(Float(threshold), forKey: "inputThreshold")
+        guard let mask = thresholdFilter.outputImage else { return nil }
 
         let candidates = detectContourBoundingBoxes(in: mask)
             .filter { $0.width * $0.height >= minimumBlobArea && $0.width * $0.height <= maximumBlobArea }
 
         return candidates.max { $0.width * $0.height < $1.width * $1.height }
+    }
+
+    private func invertedImage(_ image: CIImage) -> CIImage? {
+        let filter = CIFilter.colorInvert()
+        filter.inputImage = image
+        return filter.outputImage
     }
 
     // MARK: - 1 & 2. Masque de mouvement

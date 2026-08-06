@@ -13,9 +13,12 @@ import CoreGraphics
 /// 2. Zoom automatique maximum sur la cible détectée (l'objet remplit l'essentiel du cadre).
 /// 3. Zoom fixe × 2 centré sur la cible.
 ///
-/// Toutes en « pleine résolution » : le recadrage se fait directement sur l'image source, sans
-/// jamais la sous-échantillonner d'abord — la mise à l'échelle ARTIFICIELLE d'un recadrage
-/// n'ajouterait aucun détail réel, seulement du flou, donc on ne le fait pas.
+/// Le recadrage se fait sur l'image source en pleine résolution (jamais sous-échantillonnée
+/// d'abord), PUIS le résultat est agrandi à la taille de l'image d'origine. Un point lumineux
+/// distant ne fait parfois que quelques pixels de large : sans cet agrandissement, le recadrage
+/// resterait minuscule et illisible à l'écran même si le zoom « fonctionne » techniquement — l'image
+/// finale est donc volontairement plus douce (interpolée) en échange d'être réellement visible,
+/// conformément à l'ajustement demandé par l'utilisateur.
 enum PhotoComposer {
     private static let targetObjectFraction: CGFloat = 0.6   // l'objet doit remplir ~60% du cadre "zoom max"
     private static let maxZoomFactor: CGFloat = 8             // plafond, pour éviter un zoom absurde sur un artefact minuscule
@@ -70,7 +73,8 @@ enum PhotoComposer {
     }
 
     /// Recadre `image` autour du centre de `box` (repère Vision, normalisé, origine bas-gauche) à
-    /// `zoomFactor` — ex. zoomFactor=2 conserve un quart de la surface (moitié en largeur/hauteur).
+    /// `zoomFactor` — ex. zoomFactor=2 conserve un quart de la surface (moitié en largeur/hauteur) —
+    /// puis agrandit le résultat à la taille de l'image d'origine (voir note en tête de fichier).
     private static func crop(_ image: CGImage, centeredOn box: CGRect, zoomFactor: CGFloat) -> CGImage? {
         guard zoomFactor > 1 else { return image }
 
@@ -86,6 +90,23 @@ enum PhotoComposer {
         let originY = min(max(0, centerY - cropHeight / 2), height - cropHeight)
 
         let rect = CGRect(x: originX, y: originY, width: cropWidth, height: cropHeight).integral
-        return image.cropping(to: rect)
+        guard let cropped = image.cropping(to: rect) else { return nil }
+        return upscale(cropped, toWidth: image.width, height: image.height) ?? cropped
+    }
+
+    /// Agrandit `image` à `width`×`height` avec la meilleure qualité d'interpolation disponible en
+    /// Core Graphics — le résultat est nécessairement plus doux que l'original (aucun détail réel
+    /// n'est ajouté), mais reste visible, ce qui est le but recherché ici.
+    private static func upscale(_ image: CGImage, toWidth width: Int, height: Int) -> CGImage? {
+        guard let colorSpace = image.colorSpace,
+              let context = CGContext(
+                data: nil, width: width, height: height,
+                bitsPerComponent: 8, bytesPerRow: 0,
+                space: colorSpace, bitmapInfo: image.bitmapInfo.rawValue
+              )
+        else { return nil }
+        context.interpolationQuality = .high
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return context.makeImage()
     }
 }
