@@ -86,7 +86,16 @@ final class MotionDetector {
     /// la différence de mouvement entre images consécutives est trop faible pour être détectée.
     /// Utilisée en priorité par `AnalysisEngine` ; la détection par mouvement (`detectMovingObjects`)
     /// reste un repli pour les scènes à plus faible contraste (ex. observation de jour).
+    ///
+    /// NE S'ACTIVE QUE SUR UNE SCÈNE GLOBALEMENT SOMBRE (ciel nocturne) : sans ce garde-fou, sur un
+    /// éclairage de pièce normal (jour, intérieur éclairé), n'importe quel objet moyennement clair —
+    /// une main, un mur, un vêtement pâle — ressortirait comme « le plus brillant », sans aucun
+    /// rapport avec un véritable point lumineux isolé sur fond sombre.
+    private let darkSceneThreshold: Double = 90   // luminance moyenne 0-255 ; au-dessus, scène jugée normalement éclairée
+
     func detectByLuminosity(in frames: [CapturedFrame]) -> [TrackedObject] {
+        guard isDarkScene(frames) else { return [] }
+
         var detections: [Detection] = []
         for frame in frames {
             guard let box = brightestBoundingBox(in: frame.image) else { continue }
@@ -94,6 +103,31 @@ final class MotionDetector {
         }
         guard detections.count >= 3 else { return [] }
         return [TrackedObject(id: UUID(), detections: detections)]
+    }
+
+    /// Échantillonne quelques images pour estimer si la scène est globalement sombre.
+    private func isDarkScene(_ frames: [CapturedFrame]) -> Bool {
+        guard !frames.isEmpty else { return false }
+        let step = max(1, frames.count / 5)
+        let sampledIndices = stride(from: 0, to: frames.count, by: step)
+        let averages = sampledIndices.compactMap { averageLuminance(of: frames[$0].image) }
+        guard !averages.isEmpty else { return false }
+        return (averages.reduce(0, +) / Double(averages.count)) < darkSceneThreshold
+    }
+
+    private func averageLuminance(of image: CGImage) -> Double? {
+        let ciImage = CIImage(cgImage: image)
+        guard let filter = CIFilter(name: "CIAreaAverage") else { return nil }
+        filter.setValue(ciImage, forKey: kCIInputImageKey)
+        filter.setValue(CIVector(cgRect: ciImage.extent), forKey: kCIInputExtentKey)
+        guard let output = filter.outputImage else { return nil }
+        var pixel = [UInt8](repeating: 0, count: 4)
+        ciContext.render(
+            output, toBitmap: &pixel, rowBytes: 4,
+            bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+            format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB()
+        )
+        return (Double(pixel[0]) + Double(pixel[1]) + Double(pixel[2])) / 3.0
     }
 
     /// Seuillage de luminosité (même recette contraste + gamma agressif que `motionMask`, mais

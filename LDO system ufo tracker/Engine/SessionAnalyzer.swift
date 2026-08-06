@@ -20,7 +20,14 @@ final class SessionAnalyzer: ObservableObject {
     /// `clipRange` : extrait de 2 secondes choisi par l'utilisateur (voir `ClipTrimView`) — seul cet
     /// extrait est échantillonné et analysé, jamais la vidéo entière (voir `VideoFrameExtractor`).
     /// La vidéo complète, elle, reste intacte pour la visualisation (`videoURLWithOverlays`).
-    func analyze(videoURL: URL, poses: [PersistedFramePose] = [], clipRange: ClosedRange<Double>? = nil, completion: @escaping (AnalysisSession) -> Void) {
+    /// `mode` : choix Nuit/Jour de l'utilisateur, transmis tel quel à `AnalysisEngine`.
+    func analyze(
+        videoURL: URL,
+        poses: [PersistedFramePose] = [],
+        clipRange: ClosedRange<Double>? = nil,
+        mode: CaptureMode,
+        completion: @escaping (AnalysisSession) -> Void
+    ) {
         isAnalyzing = true
         progress = 0
         progressLabel = "Préparation de la vidéo…"
@@ -28,7 +35,7 @@ final class SessionAnalyzer: ObservableObject {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let frames = VideoFrameExtractor.extractFrames(from: videoURL, poses: poses, timeRange: clipRange)
 
-            let result = AnalysisEngine().analyze(frames: frames, videoURL: videoURL) { fraction, label in
+            let result = AnalysisEngine().analyze(frames: frames, videoURL: videoURL, mode: mode) { fraction, label in
                 DispatchQueue.main.async {
                     self?.progress = fraction
                     self?.progressLabel = label
@@ -36,6 +43,14 @@ final class SessionAnalyzer: ObservableObject {
             }
 
             PhotoLibrarySaver.savePhotos(result.photosWithOverlays)
+            // Copie aussi le résultat vidéo (avec incrustations) dans Photos — seulement si l'export
+            // a réellement produit un nouveau fichier distinct de la vidéo source. Si l'export a
+            // échoué, `videoURLWithOverlays` retombe sur `videoURL` lui-même (déjà dans Photos pour
+            // un enregistrement LIVE, ou déjà dans la bibliothèque pour un import) : le sauvegarder
+            // à nouveau créerait un doublon inutile.
+            if let overlaidVideoURL = result.videoURLWithOverlays, overlaidVideoURL != videoURL {
+                PhotoLibrarySaver.saveVideo(at: overlaidVideoURL)
+            }
 
             DispatchQueue.main.async {
                 self?.isAnalyzing = false

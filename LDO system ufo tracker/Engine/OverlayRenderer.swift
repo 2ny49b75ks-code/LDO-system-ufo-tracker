@@ -19,7 +19,13 @@ import AVFoundation
 enum OverlayRenderer {
 
     /// Dessine les incrustations sur une image fixe (les 3 photos optimales).
-    static func draw(on image: CGImage, session: AnalysisSession) -> CGImage {
+    ///
+    /// `drawTrajectory` : les points de `session.trajectory` sont calculés en coordonnées normalisées
+    /// relatives à l'image COMPLÈTE d'origine — corrects seulement quand `image` est cette image
+    /// complète (le plan large, voir `PhotoComposer`). Sur un recadrage/zoom (les photos 2 et 3),
+    /// ces mêmes coordonnées tombent n'importe où dans le cadre plus petit (des points rouges sans
+    /// rapport avec la cible) : on désactive donc ce tracé pour ces photos-là.
+    static func draw(on image: CGImage, session: AnalysisSession, drawTrajectory: Bool = true) -> CGImage {
         let width = image.width
         let height = image.height
 
@@ -40,7 +46,7 @@ enum OverlayRenderer {
         context.setLineWidth(max(2, CGFloat(width) * 0.004))
         context.setLineJoin(.round)
 
-        if session.trajectory.count >= 2 {
+        if drawTrajectory, session.trajectory.count >= 2 {
             let path = CGMutablePath()
             let first = pixelPoint(session.trajectory[0], width: width, height: height)
             path.move(to: first)

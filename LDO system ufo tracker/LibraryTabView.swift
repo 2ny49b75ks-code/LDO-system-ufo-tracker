@@ -82,7 +82,7 @@ struct LibraryTabView: View {
             }
         }
         .fullScreenCover(item: $analysisTarget) { target in
-            AnalysisFlowView(videoURL: target.videoURL, poses: target.poses) {
+            AnalysisFlowView(videoURL: target.videoURL, poses: target.poses, initialMode: target.initialMode) {
                 // « Nouvelle capture » : referme le flux d'analyse et réinitialise l'état
                 // d'importation, prêt pour une prochaine vidéo.
                 analysisTarget = nil
@@ -98,7 +98,9 @@ struct LibraryTabView: View {
                 importErrorMessage = "Impossible de lire cette vidéo."
                 return
             }
-            analysisTarget = AnalysisTarget(videoURL: movie.url, poses: [])
+            // Pas de mode connu pour une vidéo importée (jamais filmée par LDO) — Nuit par défaut,
+            // l'utilisateur peut le changer dans ClipTrimView avant de lancer l'analyse.
+            analysisTarget = AnalysisTarget(videoURL: movie.url, poses: [], initialMode: .night)
         } catch {
             importErrorMessage = "Échec de l'importation : \(error.localizedDescription)"
         }

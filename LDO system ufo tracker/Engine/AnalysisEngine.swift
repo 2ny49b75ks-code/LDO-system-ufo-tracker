@@ -78,10 +78,12 @@ final class AnalysisEngine {
     private let soundClassifier = SoundClassifier()
     private let verdictCalculator = VerdictCalculator()
 
+    /// `mode` : choix explicite Nuit/Jour de l'utilisateur (voir `CaptureMode`), détermine la
+    /// stratégie de détection de l'objet.
     /// `progress` est appelé après chaque étape terminée, avec la fraction complétée (0...1) et un
     /// libellé décrivant l'étape suivante — utilisé par `SessionAnalyzer` pour afficher une
     /// progression réelle pendant le calcul (onglets LIVE et Bibliothèque).
-    func analyze(frames: [CapturedFrame], videoURL: URL?, progress: ((Double, String) -> Void)? = nil) -> AnalysisSession {
+    func analyze(frames: [CapturedFrame], videoURL: URL?, mode: CaptureMode, progress: ((Double, String) -> Void)? = nil) -> AnalysisSession {
         var session = AnalysisSession()
         session.timestamp = Date()
 
@@ -91,17 +93,24 @@ final class AnalysisEngine {
         }
 
         report(0, "Détection de l'objet…")
-        // Étape 2 : détection de l'objet. On commence par un seuillage de luminosité (voir
-        // MotionDetector.detectByLuminosity) — bien plus fiable pour le cas d'usage principal de
-        // LDO (objet lumineux sur ciel sombre) qu'une différence de mouvement entre deux images,
-        // qui exige un déplacement net et peut manquer un objet lointain ou lent. On ne retombe
-        // sur la détection par mouvement que si la luminosité seule n'a rien isolé (ex. scène de
-        // jour, plus faible contraste).
-        var trackedObjects = motionDetector.detectByLuminosity(in: frames)
-        debugLog("détection par luminosité : \(trackedObjects.first?.detections.count ?? 0) détection(s) sur \(frames.count) image(s)")
-        if trackedObjects.isEmpty {
+        // Étape 2 : détection de l'objet, selon le mode choisi par l'utilisateur (voir CaptureMode).
+        // Nuit : seuillage de luminosité en priorité (trouve directement le point le plus brillant,
+        // fiable même sans déplacement net entre deux images) — avec repli sur la détection par
+        // mouvement si rien n'est isolé. Jour : détection par mouvement uniquement — sur une scène
+        // normalement éclairée, chercher "le plus brillant" désignerait n'importe quel objet clair
+        // (une main, un mur...) sans rapport avec un point lumineux isolé.
+        var trackedObjects: [TrackedObject]
+        switch mode {
+        case .night:
+            trackedObjects = motionDetector.detectByLuminosity(in: frames)
+            debugLog("détection par luminosité : \(trackedObjects.first?.detections.count ?? 0) détection(s) sur \(frames.count) image(s)")
+            if trackedObjects.isEmpty {
+                trackedObjects = motionDetector.detectMovingObjects(in: frames)
+                debugLog("repli détection par mouvement : \(trackedObjects.first?.detections.count ?? 0) détection(s)")
+            }
+        case .day:
             trackedObjects = motionDetector.detectMovingObjects(in: frames)
-            debugLog("repli détection par mouvement : \(trackedObjects.first?.detections.count ?? 0) détection(s)")
+            debugLog("détection par mouvement (mode jour) : \(trackedObjects.first?.detections.count ?? 0) détection(s)")
         }
         let mainObject = trackedObjects.max(by: { $0.detections.count < $1.detections.count })
         let detections = mainObject?.detections ?? []
@@ -190,7 +199,11 @@ final class AnalysisEngine {
         // ×2 — voir PhotoComposer), incrustées de la trajectoire rouge, date/heure, vitesse max et
         // du logo LDO conditionnel ; incrustations identiques sur la vidéo complète.
         let photoSet = PhotoComposer.composePhotoSet(frames: frames, detections: detections)
-        session.photosWithOverlays = photoSet.map { OverlayRenderer.draw(on: $0, session: session) }
+        session.photosWithOverlays = photoSet.enumerated().map { index, image in
+            // Seule la première photo (plan large, non recadrée) a des coordonnées de trajectoire
+            // valides — voir OverlayRenderer.draw.
+            OverlayRenderer.draw(on: image, session: session, drawTrajectory: index == 0)
+        }
         session.videoURLWithOverlays = OverlayRenderer.exportVideoWithOverlays(sourceURL: videoURL, session: session)
 
         report(9, "Terminé")

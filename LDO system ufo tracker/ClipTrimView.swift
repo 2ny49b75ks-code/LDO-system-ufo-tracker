@@ -13,8 +13,9 @@ import AVFoundation
 /// et ciblée ; la vidéo complète reste intacte pour la visualisation (voir `AnalysisFlowView`).
 struct ClipTrimView: View {
     let videoURL: URL
+    let initialMode: CaptureMode
     let onCancel: () -> Void
-    let onConfirm: (ClosedRange<Double>?) -> Void
+    let onConfirm: (ClosedRange<Double>?, CaptureMode) -> Void
 
     private let clipDuration: Double = 2.0
 
@@ -22,12 +23,20 @@ struct ClipTrimView: View {
     @State private var duration: Double = 0
     @State private var clipStart: Double = 0
     @State private var isLoadingDuration = true
+    @State private var mode: CaptureMode
 
-    init(videoURL: URL, onCancel: @escaping () -> Void, onConfirm: @escaping (ClosedRange<Double>?) -> Void) {
+    init(
+        videoURL: URL,
+        initialMode: CaptureMode,
+        onCancel: @escaping () -> Void,
+        onConfirm: @escaping (ClosedRange<Double>?, CaptureMode) -> Void
+    ) {
         self.videoURL = videoURL
+        self.initialMode = initialMode
         self.onCancel = onCancel
         self.onConfirm = onConfirm
         _player = State(initialValue: AVPlayer(url: videoURL))
+        _mode = State(initialValue: initialMode)
     }
 
     var body: some View {
@@ -55,6 +64,26 @@ struct ClipTrimView: View {
                 .frame(height: 320)
                 .cornerRadius(12)
                 .padding(.horizontal)
+
+            VStack(spacing: 6) {
+                Text("Conditions de la vidéo")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Picker("Mode", selection: $mode) {
+                    ForEach(CaptureMode.allCases) { option in
+                        Label(option.label, systemImage: option.systemImage).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal, 60)
+                Text(mode == .night
+                     ? "Ciel sombre avec un point lumineux — détection par luminosité en priorité."
+                     : "Scène normalement éclairée (jour, intérieur) — détection par mouvement.")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 30)
+            }
 
             if isLoadingDuration {
                 ProgressView()
@@ -86,7 +115,7 @@ struct ClipTrimView: View {
             }
 
             Button {
-                onConfirm(duration > clipDuration ? clipStart...(clipStart + clipDuration) : nil)
+                onConfirm(duration > clipDuration ? clipStart...(clipStart + clipDuration) : nil, mode)
             } label: {
                 Text("Analyser cet extrait")
                     .frame(maxWidth: .infinity)

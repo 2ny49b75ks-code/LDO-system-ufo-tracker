@@ -8,10 +8,14 @@ import SwiftUI
 
 /// Identifie une vidéo (enregistrée via LIVE, avec pose ARKit optionnelle, ou importée depuis la
 /// bibliothèque, sans pose) à analyser — présentée en plein écran depuis l'un ou l'autre onglet.
+/// `initialMode` préremplit le sélecteur Nuit/Jour dans `ClipTrimView` (le mode choisi à
+/// l'enregistrement pour une vidéo LIVE, ou `.night` par défaut pour un import bibliothèque) —
+/// l'utilisateur peut toujours le changer avant de lancer l'analyse.
 struct AnalysisTarget: Identifiable {
     let id = UUID()
     let videoURL: URL
     let poses: [PersistedFramePose]
+    let initialMode: CaptureMode
 }
 
 /// Enchaîne les 3 étapes de l'analyse d'une vidéo déjà enregistrée, dans une seule présentation
@@ -21,6 +25,7 @@ struct AnalysisTarget: Identifiable {
 struct AnalysisFlowView: View {
     let videoURL: URL
     let poses: [PersistedFramePose]
+    let initialMode: CaptureMode
     let onFinished: () -> Void
 
     private enum Step {
@@ -41,10 +46,11 @@ struct AnalysisFlowView: View {
             case .trimming:
                 ClipTrimView(
                     videoURL: videoURL,
+                    initialMode: initialMode,
                     onCancel: { dismiss() },
-                    onConfirm: { clipRange in
+                    onConfirm: { clipRange, mode in
                         step = .analyzing
-                        analyzer.analyze(videoURL: videoURL, poses: poses, clipRange: clipRange) { session in
+                        analyzer.analyze(videoURL: videoURL, poses: poses, clipRange: clipRange, mode: mode) { session in
                             step = .results(session)
                         }
                     }

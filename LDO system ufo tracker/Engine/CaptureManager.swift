@@ -30,6 +30,10 @@ final class CaptureManager: NSObject, ObservableObject {
     /// apparaisse dans la liste de l'onglet LIVE.
     var recordingStore: RecordingStore?
 
+    /// Choix Nuit/Jour de l'utilisateur (voir `CaptureMode`), réglé par la vue hôte avant
+    /// l'enregistrement et sauvegardé avec la vidéo pour déterminer la stratégie d'analyse.
+    @Published var captureMode: CaptureMode = .night
+
     private var frameBuffer: [CapturedFrame] = []
 
     // Cadence du buffer d'ANALYSE (pose ARKit + image en mémoire, voir `storeRecording`) : ~12
@@ -256,7 +260,7 @@ final class CaptureManager: NSObject, ObservableObject {
             posesFileName = posesFile
         }
 
-        recordingStore.add(videoFileName: fileName, posesFileName: posesFileName, createdAt: Date())
+        recordingStore.add(videoFileName: fileName, posesFileName: posesFileName, createdAt: Date(), mode: captureMode)
 
         // Sauvegarde également dans Photos/iCloud, comme avant (vidéo brute — les photos avec
         // incrustations ne sont générées qu'au moment de l'analyse, voir SessionAnalyzer).

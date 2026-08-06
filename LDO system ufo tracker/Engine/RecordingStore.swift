@@ -60,6 +60,40 @@ struct RecordedSession: Identifiable, Codable, Equatable {
     let videoFileName: String
     let posesFileName: String?
     let createdAt: Date
+    let mode: CaptureMode
+
+    init(id: UUID, videoFileName: String, posesFileName: String?, createdAt: Date, mode: CaptureMode) {
+        self.id = id
+        self.videoFileName = videoFileName
+        self.posesFileName = posesFileName
+        self.createdAt = createdAt
+        self.mode = mode
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, videoFileName, posesFileName, createdAt, mode
+    }
+
+    // Décodeur personnalisé : les enregistrements sauvegardés avant l'ajout du mode Nuit/Jour n'ont
+    // pas cette clé — on retombe sur `.night` (comportement d'avant, cohérent avec l'usage principal
+    // de l'app) plutôt que de faire échouer la lecture de l'index existant.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        videoFileName = try container.decode(String.self, forKey: .videoFileName)
+        posesFileName = try container.decodeIfPresent(String.self, forKey: .posesFileName)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        mode = try container.decodeIfPresent(CaptureMode.self, forKey: .mode) ?? .night
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(videoFileName, forKey: .videoFileName)
+        try container.encodeIfPresent(posesFileName, forKey: .posesFileName)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encode(mode, forKey: .mode)
+    }
 }
 
 /// Gère la liste des vidéos enregistrées via l'onglet LIVE, stockées localement dans le dossier
@@ -92,8 +126,8 @@ final class RecordingStore: ObservableObject {
     }
 
     @discardableResult
-    func add(videoFileName: String, posesFileName: String?, createdAt: Date) -> RecordedSession {
-        let session = RecordedSession(id: UUID(), videoFileName: videoFileName, posesFileName: posesFileName, createdAt: createdAt)
+    func add(videoFileName: String, posesFileName: String?, createdAt: Date, mode: CaptureMode) -> RecordedSession {
+        let session = RecordedSession(id: UUID(), videoFileName: videoFileName, posesFileName: posesFileName, createdAt: createdAt, mode: mode)
         sessions.insert(session, at: 0)
         persistIndex()
         return session

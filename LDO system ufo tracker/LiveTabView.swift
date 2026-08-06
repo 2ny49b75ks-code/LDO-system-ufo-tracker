@@ -25,6 +25,21 @@ struct LiveTabView: View {
 
                 Spacer()
 
+                // Choix Nuit/Jour : détermine la stratégie de détection utilisée à l'analyse (voir
+                // CaptureMode) — sauvegardé avec la vidéo, modifiable seulement avant d'enregistrer.
+                Picker("Mode", selection: $capture.captureMode) {
+                    ForEach(CaptureMode.allCases) { option in
+                        Label(option.label, systemImage: option.systemImage).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 220)
+                .padding(8)
+                .background(.black.opacity(0.4))
+                .clipShape(Capsule())
+                .disabled(capture.isRecording)
+                .padding(.bottom, 16)
+
                 // Bouton en forme de soucoupe volante
                 Button(action: { capture.toggleRecording() }) {
                     SaucerButtonShape(isRecording: capture.isRecording)

@@ -29,12 +29,18 @@ struct RecordingsListView: View {
                     Button {
                         analysisTarget = AnalysisTarget(
                             videoURL: recordingStore.videoURL(for: session),
-                            poses: recordingStore.poses(for: session)
+                            poses: recordingStore.poses(for: session),
+                            initialMode: session.mode
                         )
                     } label: {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(session.createdAt.formatted(date: .abbreviated, time: .shortened))
-                                .font(.headline)
+                            HStack(spacing: 6) {
+                                Text(session.createdAt.formatted(date: .abbreviated, time: .shortened))
+                                    .font(.headline)
+                                Label(session.mode.label, systemImage: session.mode.systemImage)
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
                             Text(session.posesFileName != nil ? "Analyser (pose ARKit disponible)" : "Analyser")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
@@ -53,7 +59,7 @@ struct RecordingsListView: View {
             }
         }
         .fullScreenCover(item: $analysisTarget) { target in
-            AnalysisFlowView(videoURL: target.videoURL, poses: target.poses) {
+            AnalysisFlowView(videoURL: target.videoURL, poses: target.poses, initialMode: target.initialMode) {
                 // « Nouvelle capture » : referme le flux d'analyse ET cette liste, pour revenir
                 // directement à l'écran caméra prêt à filmer.
                 analysisTarget = nil
