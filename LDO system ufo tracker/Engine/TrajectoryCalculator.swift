@@ -46,21 +46,27 @@ final class TrajectoryCalculator {
             return TrajectoryResult.insufficientData(points2D: detections.map { center($0.boundingBox) })
         }
 
-        // 2. Lissage léger (moyenne glissante) pour ne pas confondre le bruit de détection
-        //    pixel par pixel avec un véritable changement de trajectoire.
+        // 2. Lissage léger (moyenne glissante), utilisé UNIQUEMENT pour le test de linéarité global
+        //    (forme d'ensemble de la trajectoire) — surtout pas pour la vitesse ou les virages : une
+        //    trajectoire non linéaire (virages brusques, cas typique d'une observation d'OVNI) atteint
+        //    précisément ses vitesses/accélérations de pointe PENDANT ces changements de direction, et
+        //    une moyenne glissante sur les directions écraserait justement ces pics vers des valeurs
+        //    plus basses et plus "lisses" que le déplacement réel.
         let smoothed = smooth(angularSamples, window: smoothingWindow)
 
         // 3. Test de linéarité : régression sur les directions angulaires successives.
         //    R² proche de 1 => trajectoire rectiligne continue ; sinon => asymétrique.
         let (isLinear, r2) = linearityTest(smoothed)
 
-        // 4. Vitesse angulaire et accélération angulaire (toujours calculables, sans distance).
-        let angularVelocities = angularVelocity(smoothed)          // degrés/seconde
+        // 4. Vitesse et accélération angulaires calculées sur les échantillons BRUTS (non lissés),
+        //    pour préserver les pics réels de vitesse pendant un virage rapide.
+        let angularVelocities = angularVelocity(angularSamples)     // degrés/seconde
         let angularAcceleration = derivative(angularVelocities)     // degrés/seconde²
         let maxAngularAcceleration = angularAcceleration.map { abs($0.value) }.max() ?? 0
 
-        // 5. Détection des changements de direction brusques (virages) par courbure locale.
-        let curvatureEvents = detectSharpTurns(smoothed, distanceMeters: estimatedDistanceMeters)
+        // 5. Détection des changements de direction brusques (virages) par courbure locale — aussi
+        //    sur les échantillons bruts, pour la même raison.
+        let curvatureEvents = detectSharpTurns(angularSamples, distanceMeters: estimatedDistanceMeters)
 
         // 6. Estimation des forces G.
         //    - Si une distance est disponible : accélération latérale réelle ≈ distance × accélération angulaire (rad/s²)
