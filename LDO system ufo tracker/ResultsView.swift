@@ -6,6 +6,7 @@
 
 import SwiftUI
 import MapKit
+import CoreLocation
 
 /// Page annexe claire présentée après l'analyse : toutes les informations demandées (points 1 à 9)
 /// plus le verdict final et le pourcentage de possibilité.
@@ -73,6 +74,26 @@ struct ResultsView: View {
                             .cornerRadius(12)
                     }
 
+                    // Position de la capture : carte + coordonnées GPS de l'appareil au moment de
+                    // l'enregistrement (voir LocationProvider). Indisponible pour une vidéo importée
+                    // de la bibliothèque ou si la permission de localisation n'a pas été accordée.
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Position de la capture")
+                            .font(.headline)
+                        if let coordinate = session.captureLocation {
+                            CaptureLocationMapView(coordinate: coordinate)
+                                .frame(height: 220)
+                                .cornerRadius(12)
+                            Text(String(format: "Latitude : %.5f — Longitude : %.5f", coordinate.lat, coordinate.lon))
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        } else {
+                            Text("Position GPS non disponible (vidéo importée depuis la bibliothèque, ou permission de localisation non accordée).")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+
                     Divider()
 
                     VStack(alignment: .leading, spacing: 6) {
@@ -124,6 +145,30 @@ struct ResultsView: View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title).font(.caption).foregroundColor(.secondary)
             Text(value).font(.body)
+        }
+    }
+}
+
+/// Carte affichant un repère à la position GPS de l'appareil au moment de l'enregistrement — API
+/// SwiftUI Map moderne, plus simple que `TrajectoryMapView` ci-dessous puisqu'il n'y a ici qu'un
+/// seul point à afficher (pas de tracé nécessitant un `MKMapViewDelegate`).
+struct CaptureLocationMapView: View {
+    let coordinate: CLCoordinate
+
+    private var coordinate2D: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: coordinate.lat, longitude: coordinate.lon)
+    }
+
+    var body: some View {
+        Map(initialPosition: .region(MKCoordinateRegion(
+            center: coordinate2D,
+            span: MKCoordinateSpan(latitudeDelta: 8, longitudeDelta: 8)
+        ))) {
+            Annotation("Lieu de capture", coordinate: coordinate2D) {
+                Image(systemName: "scope")
+                    .font(.title2)
+                    .foregroundColor(.red)
+            }
         }
     }
 }

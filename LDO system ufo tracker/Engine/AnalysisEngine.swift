@@ -21,6 +21,10 @@ struct AnalysisSession: Identifiable, Equatable {
 
     var trajectory: [CGPoint] = []          // trajectoire en pixels, superposée en rouge
     var trajectoryOnMap: [CLCoordinate] = [] // vue aérienne (MapKit)
+    /// Position GPS de l'appareil au moment de l'enregistrement (voir `LocationProvider`) — `nil`
+    /// pour une vidéo importée depuis la bibliothèque (aucune métadonnée de position disponible,
+    /// comme pour la pose ARKit) ou si la permission de localisation n'a pas été accordée.
+    var captureLocation: CLCoordinate?
     var isLinear: Bool = true
     var linearityR2: Double = 1.0            // 1.0 = parfaitement rectiligne
     var hasImpossibleGForce: Bool = false
@@ -85,9 +89,10 @@ final class AnalysisEngine {
     /// `progress` est appelé après chaque étape terminée, avec la fraction complétée (0...1) et un
     /// libellé décrivant l'étape suivante — utilisé par `SessionAnalyzer` pour afficher une
     /// progression réelle pendant le calcul (onglets LIVE et Bibliothèque).
-    func analyze(frames: [CapturedFrame], videoURL: URL?, mode: CaptureMode, progress: ((Double, String) -> Void)? = nil) -> AnalysisSession {
+    func analyze(frames: [CapturedFrame], videoURL: URL?, mode: CaptureMode, captureLocation: CLCoordinate? = nil, progress: ((Double, String) -> Void)? = nil) -> AnalysisSession {
         var session = AnalysisSession()
         session.timestamp = Date()
+        session.captureLocation = captureLocation
 
         let totalSteps = 9.0
         func report(_ completedSteps: Double, _ nextStepLabel: String) {

@@ -16,6 +16,9 @@ struct AnalysisTarget: Identifiable {
     let videoURL: URL
     let poses: [PersistedFramePose]
     let initialMode: CaptureMode
+    /// Position GPS demandée au début de l'enregistrement (voir `LocationProvider`) — `nil` pour un
+    /// import bibliothèque, comme la pose ARKit.
+    let captureLocation: CLCoordinate?
 }
 
 /// Enchaîne les 3 étapes de l'analyse d'une vidéo déjà enregistrée, dans une seule présentation
@@ -26,6 +29,7 @@ struct AnalysisFlowView: View {
     let videoURL: URL
     let poses: [PersistedFramePose]
     let initialMode: CaptureMode
+    let captureLocation: CLCoordinate?
     let onFinished: () -> Void
 
     private enum Step {
@@ -50,7 +54,7 @@ struct AnalysisFlowView: View {
                     onCancel: { dismiss() },
                     onConfirm: { clipRange, mode in
                         step = .analyzing
-                        analyzer.analyze(videoURL: videoURL, poses: poses, clipRange: clipRange, mode: mode) { session in
+                        analyzer.analyze(videoURL: videoURL, poses: poses, clipRange: clipRange, mode: mode, captureLocation: captureLocation) { session in
                             step = .results(session)
                         }
                     }

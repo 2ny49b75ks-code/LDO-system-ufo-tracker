@@ -10,6 +10,7 @@ import AVFoundation
 import CoreMedia
 import ARKit
 import CoreImage
+import CoreLocation
 
 /// Étape 1 : capture vidéo HD via ARKit (position/orientation de caméra à chaque image, utilisées
 /// pour la triangulation angulaire — voir DistanceEstimator). L'enregistrement se contente de
@@ -33,6 +34,10 @@ final class CaptureManager: NSObject, ObservableObject {
     /// Choix Nuit/Jour de l'utilisateur (voir `CaptureMode`), réglé par la vue hôte avant
     /// l'enregistrement et sauvegardé avec la vidéo pour déterminer la stratégie d'analyse.
     @Published var captureMode: CaptureMode = .night
+
+    /// Position GPS demandée au début de chaque enregistrement — voir `LocationProvider` — utilisée
+    /// uniquement pour situer la capture sur une carte dans les résultats.
+    private let locationProvider = LocationProvider()
 
     private var frameBuffer: [CapturedFrame] = []
 
@@ -64,6 +69,8 @@ final class CaptureManager: NSObject, ObservableObject {
     // MARK: Configuration
 
     func configureARTracking() {
+        locationProvider.requestAuthorizationIfNeeded()
+
         guard ARWorldTrackingConfiguration.isSupported else {
             trackingActive = false
             return
@@ -105,6 +112,7 @@ final class CaptureManager: NSObject, ObservableObject {
             lastCaptureTimestamp = 0
             lastVideoFrameTimestamp = 0
             videoOutputURL = nil
+            locationProvider.captureCurrentLocation()
         } else {
             finishWriting { [weak self] finishedVideoURL in
                 self?.storeRecording(videoURL: finishedVideoURL)
@@ -260,7 +268,11 @@ final class CaptureManager: NSObject, ObservableObject {
             posesFileName = posesFile
         }
 
-        recordingStore.add(videoFileName: fileName, posesFileName: posesFileName, createdAt: Date(), mode: captureMode)
+        let location = locationProvider.lastKnownLocation
+        recordingStore.add(
+            videoFileName: fileName, posesFileName: posesFileName, createdAt: Date(), mode: captureMode,
+            latitude: location?.coordinate.latitude, longitude: location?.coordinate.longitude
+        )
 
         // Sauvegarde également dans Photos/iCloud, comme avant (vidéo brute — les photos avec
         // incrustations ne sont générées qu'au moment de l'analyse, voir SessionAnalyzer).

@@ -82,7 +82,7 @@ struct LibraryTabView: View {
             }
         }
         .fullScreenCover(item: $analysisTarget) { target in
-            AnalysisFlowView(videoURL: target.videoURL, poses: target.poses, initialMode: target.initialMode) {
+            AnalysisFlowView(videoURL: target.videoURL, poses: target.poses, initialMode: target.initialMode, captureLocation: target.captureLocation) {
                 // « Nouvelle capture » : referme le flux d'analyse et réinitialise l'état
                 // d'importation, prêt pour une prochaine vidéo.
                 analysisTarget = nil
@@ -99,8 +99,10 @@ struct LibraryTabView: View {
                 return
             }
             // Pas de mode connu pour une vidéo importée (jamais filmée par LDO) — Nuit par défaut,
-            // l'utilisateur peut le changer dans ClipTrimView avant de lancer l'analyse.
-            analysisTarget = AnalysisTarget(videoURL: movie.url, poses: [], initialMode: .night)
+            // l'utilisateur peut le changer dans ClipTrimView avant de lancer l'analyse. Pas de
+            // position GPS non plus : aucune métadonnée de localisation lue depuis l'import (même
+            // limitation que la pose ARKit, voir AnalysisTarget).
+            analysisTarget = AnalysisTarget(videoURL: movie.url, poses: [], initialMode: .night, captureLocation: nil)
         } catch {
             importErrorMessage = "Échec de l'importation : \(error.localizedDescription)"
         }

@@ -26,6 +26,7 @@ final class SessionAnalyzer: ObservableObject {
         poses: [PersistedFramePose] = [],
         clipRange: ClosedRange<Double>? = nil,
         mode: CaptureMode,
+        captureLocation: CLCoordinate? = nil,
         completion: @escaping (AnalysisSession) -> Void
     ) {
         isAnalyzing = true
@@ -35,7 +36,7 @@ final class SessionAnalyzer: ObservableObject {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let frames = VideoFrameExtractor.extractFrames(from: videoURL, poses: poses, timeRange: clipRange)
 
-            let result = AnalysisEngine().analyze(frames: frames, videoURL: videoURL, mode: mode) { fraction, label in
+            let result = AnalysisEngine().analyze(frames: frames, videoURL: videoURL, mode: mode, captureLocation: captureLocation) { fraction, label in
                 DispatchQueue.main.async {
                     self?.progress = fraction
                     self?.progressLabel = label

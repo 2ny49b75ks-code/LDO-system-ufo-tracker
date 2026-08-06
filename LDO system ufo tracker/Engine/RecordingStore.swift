@@ -61,22 +61,29 @@ struct RecordedSession: Identifiable, Codable, Equatable {
     let posesFileName: String?
     let createdAt: Date
     let mode: CaptureMode
+    /// Position GPS demandée au début de l'enregistrement (voir `LocationProvider`) — `nil` si la
+    /// permission de localisation n'a pas été accordée ou si aucune position n'a pu être obtenue à
+    /// temps. Utilisée uniquement pour situer la capture sur une carte dans les résultats.
+    let latitude: Double?
+    let longitude: Double?
 
-    init(id: UUID, videoFileName: String, posesFileName: String?, createdAt: Date, mode: CaptureMode) {
+    init(id: UUID, videoFileName: String, posesFileName: String?, createdAt: Date, mode: CaptureMode, latitude: Double? = nil, longitude: Double? = nil) {
         self.id = id
         self.videoFileName = videoFileName
         self.posesFileName = posesFileName
         self.createdAt = createdAt
         self.mode = mode
+        self.latitude = latitude
+        self.longitude = longitude
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, videoFileName, posesFileName, createdAt, mode
+        case id, videoFileName, posesFileName, createdAt, mode, latitude, longitude
     }
 
-    // Décodeur personnalisé : les enregistrements sauvegardés avant l'ajout du mode Nuit/Jour n'ont
-    // pas cette clé — on retombe sur `.night` (comportement d'avant, cohérent avec l'usage principal
-    // de l'app) plutôt que de faire échouer la lecture de l'index existant.
+    // Décodeur personnalisé : les enregistrements sauvegardés avant l'ajout du mode Nuit/Jour ou de
+    // la position GPS n'ont pas ces clés — on retombe sur `.night` / `nil` (comportement d'avant)
+    // plutôt que de faire échouer la lecture de l'index existant.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
@@ -84,6 +91,8 @@ struct RecordedSession: Identifiable, Codable, Equatable {
         posesFileName = try container.decodeIfPresent(String.self, forKey: .posesFileName)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         mode = try container.decodeIfPresent(CaptureMode.self, forKey: .mode) ?? .night
+        latitude = try container.decodeIfPresent(Double.self, forKey: .latitude)
+        longitude = try container.decodeIfPresent(Double.self, forKey: .longitude)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -93,6 +102,13 @@ struct RecordedSession: Identifiable, Codable, Equatable {
         try container.encodeIfPresent(posesFileName, forKey: .posesFileName)
         try container.encode(createdAt, forKey: .createdAt)
         try container.encode(mode, forKey: .mode)
+        try container.encodeIfPresent(latitude, forKey: .latitude)
+        try container.encodeIfPresent(longitude, forKey: .longitude)
+    }
+
+    var captureCoordinate: CLCoordinate? {
+        guard let latitude, let longitude else { return nil }
+        return CLCoordinate(lat: latitude, lon: longitude)
     }
 }
 
@@ -126,8 +142,8 @@ final class RecordingStore: ObservableObject {
     }
 
     @discardableResult
-    func add(videoFileName: String, posesFileName: String?, createdAt: Date, mode: CaptureMode) -> RecordedSession {
-        let session = RecordedSession(id: UUID(), videoFileName: videoFileName, posesFileName: posesFileName, createdAt: createdAt, mode: mode)
+    func add(videoFileName: String, posesFileName: String?, createdAt: Date, mode: CaptureMode, latitude: Double? = nil, longitude: Double? = nil) -> RecordedSession {
+        let session = RecordedSession(id: UUID(), videoFileName: videoFileName, posesFileName: posesFileName, createdAt: createdAt, mode: mode, latitude: latitude, longitude: longitude)
         sessions.insert(session, at: 0)
         persistIndex()
         return session

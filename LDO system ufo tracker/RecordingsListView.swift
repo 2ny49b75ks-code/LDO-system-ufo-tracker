@@ -30,7 +30,8 @@ struct RecordingsListView: View {
                         analysisTarget = AnalysisTarget(
                             videoURL: recordingStore.videoURL(for: session),
                             poses: recordingStore.poses(for: session),
-                            initialMode: session.mode
+                            initialMode: session.mode,
+                            captureLocation: session.captureCoordinate
                         )
                     } label: {
                         VStack(alignment: .leading, spacing: 4) {
@@ -59,7 +60,7 @@ struct RecordingsListView: View {
             }
         }
         .fullScreenCover(item: $analysisTarget) { target in
-            AnalysisFlowView(videoURL: target.videoURL, poses: target.poses, initialMode: target.initialMode) {
+            AnalysisFlowView(videoURL: target.videoURL, poses: target.poses, initialMode: target.initialMode, captureLocation: target.captureLocation) {
                 // « Nouvelle capture » : referme le flux d'analyse ET cette liste, pour revenir
                 // directement à l'écran caméra prêt à filmer.
                 analysisTarget = nil
