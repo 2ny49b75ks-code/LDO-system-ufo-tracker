@@ -6,6 +6,8 @@
 
 import Foundation
 import CoreGraphics
+import CoreImage
+import CoreImage.CIFilterBuiltins
 
 /// Compose les 3 photos demandées à partir de l'image la plus nette parmi celles qui ont une
 /// détection associée (voir `FrameQualityScorer`) :
@@ -37,7 +39,7 @@ enum PhotoComposer {
 
         let autoZoom = maxZoomFactor(for: bestDetection.boundingBox, image: bestFrame.image)
         if let zoomedMax = crop(bestFrame.image, centeredOn: bestDetection.boundingBox, zoomFactor: autoZoom) {
-            photos.append(zoomedMax)   // 2. Zoom automatique maximum sur la cible.
+            photos.append(enhance(zoomedMax) ?? zoomedMax)   // 2. Zoom automatique maximum sur la cible, rehaussé.
         }
         if let zoomed2x = crop(bestFrame.image, centeredOn: bestDetection.boundingBox, zoomFactor: fixedZoomFactor) {
             photos.append(zoomed2x)    // 3. Zoom fixe × 2.
@@ -108,5 +110,23 @@ enum PhotoComposer {
         context.interpolationQuality = .high
         context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
         return context.makeImage()
+    }
+
+    /// Rehausse contraste et saturation de la photo « zoom maximum » — un point lumineux distant,
+    /// même une fois agrandi (voir `upscale`), reste souvent terne et peu contrasté par rapport au
+    /// fond du ciel une fois recadré numériquement. Ce rehaussement reproduit sur toutes les photos,
+    /// automatiquement, ce que l'utilisateur devait auparavant faire manuellement (recadrage +
+    /// retouche) pour bien distinguer l'objet.
+    private static let enhanceContext = CIContext()
+
+    private static func enhance(_ image: CGImage) -> CGImage? {
+        let ciImage = CIImage(cgImage: image)
+        let filter = CIFilter.colorControls()
+        filter.inputImage = ciImage
+        filter.contrast = 1.35
+        filter.saturation = 1.4
+        filter.brightness = 0.05
+        guard let output = filter.outputImage else { return nil }
+        return enhanceContext.createCGImage(output, from: ciImage.extent)
     }
 }
