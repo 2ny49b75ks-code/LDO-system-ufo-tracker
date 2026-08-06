@@ -28,6 +28,8 @@ struct AnalysisSession: Identifiable, Equatable {
     var gForceConfidence: Double = 0         // faible sans mesure de distance fiable
     var maxAngularAccelerationDegPerS2: Double = 0  // mesure indépendante de la distance, toujours fiable
     var curvatureEvents: [CurvatureEvent] = []
+    var isZigzagTrajectory: Bool = false      // alternance gauche-droite (voir TrajectoryCalculator)
+    var trajectoryReversalCount: Int = 0
 
     var illuminationPattern: String = ""     // "Continue" / "Variable / clignotante"
     var illuminationColor: String = ""       // ex: "blanc-bleuté (probable LED)" / "orangé (probable reflet solaire)"
@@ -148,6 +150,8 @@ final class AnalysisEngine {
         session.hasImpossibleGForce = traj.exceedsHumanTolerance
         session.maxAngularAccelerationDegPerS2 = traj.maxAngularAccelerationDegPerS2
         session.curvatureEvents = traj.curvatureEvents
+        session.isZigzagTrajectory = traj.isZigzagPattern
+        session.trajectoryReversalCount = traj.directionReversalCount
 
         report(4, "Analyse de l'illumination…")
         // Étape 5 : illumination et couleur (voir IlluminationAnalyzer.swift), échantillonnée sur

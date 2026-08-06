@@ -14,6 +14,10 @@ import Foundation
 /// certitude scientifique — seulement une aide à l'interprétation, avec le détail de son raisonnement.
 final class VerdictCalculator {
 
+    /// Vitesse maximale publiquement documentée d'un F-35 (~Mach 1.6, en palier). Sert de repère
+    /// pour juger si une vitesse mesurée dépasse largement tout aéronef militaire connu.
+    private let f35MaxSpeedKmh: Double = 1960.0
+
     func computeVerdict(session: AnalysisSession, shape: ShapeResult) -> VerdictResult {
         var score = 0.0
         var factors: [String] = []
@@ -57,10 +61,36 @@ final class VerdictCalculator {
             score += 5
         }
 
-        // 6. Illumination variable/clignotante à haute fréquence : signal ambigu (les feux de
-        //    navigation d'avion clignotent aussi), pondéré faiblement.
+        // 6. Scintillement de luminosité variable : signal notable pour un OVNI, à l'opposé d'un
+        //    projecteur ou d'un feu fixe dont l'intensité reste constante. Une luminosité continue,
+        //    elle, est au contraire cohérente avec une source connue.
         if session.illuminationPattern.contains("Variable") {
-            score += 5
+            score += 15
+            factors.append("Luminosité variable / scintillante — atypique d'un projecteur ou feu fixe à intensité constante")
+        } else if session.illuminationPattern == "Continue" {
+            score -= 10
+            factors.append("Luminosité continue et stable — cohérent avec un projecteur ou feu de navigation connu")
+        }
+
+        // 7. Vitesse très supérieure à celle de tout aéronef militaire connu (repère : F-35, ~Mach
+        //    1.6). Un objet 2 à 3 fois plus rapide qu'un chasseur révèle une performance hors de
+        //    portée de l'aviation connue.
+        if session.speedConfidence > 0 {
+            if session.maxSpeedKmh >= 3 * f35MaxSpeedKmh {
+                score += 30
+                factors.append("Vitesse ~\(Int(session.maxSpeedKmh)) km/h — plus de 3× la vitesse maximale d'un F-35 (~\(Int(f35MaxSpeedKmh)) km/h)")
+            } else if session.maxSpeedKmh >= 2 * f35MaxSpeedKmh {
+                score += 20
+                factors.append("Vitesse ~\(Int(session.maxSpeedKmh)) km/h — plus de 2× la vitesse maximale d'un F-35 (~\(Int(f35MaxSpeedKmh)) km/h)")
+            }
+        }
+
+        // 8. Trajectoire en zigzag gauche-droite : un aéronef, un drone ou un satellite connu suit
+        //    une trajectoire linéaire ou une courbe continue dans une seule direction — des
+        //    changements de sens répétés ne correspondent à aucun comportement de vol connu.
+        if session.isZigzagTrajectory {
+            score += 25
+            factors.append("Trajectoire en zigzag gauche-droite (\(session.trajectoryReversalCount) changements de direction) — atypique d'un aéronef, drone ou satellite connu")
         }
 
         score = max(0, score)

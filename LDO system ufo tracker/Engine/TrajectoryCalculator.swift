@@ -81,6 +81,11 @@ final class TrajectoryCalculator {
         // 7. Points 2D (pixels) pour le tracé rouge sur la vidéo/les photos.
         let points2D = detections.map { center($0.boundingBox) }
 
+        // 8. Motif en zigzag gauche-droite : un avion, un drone ou un satellite suit une trajectoire
+        //    linéaire ou une courbe continue dans UNE seule direction ; des changements de sens
+        //    répétés (gauche-droite-gauche...) ne correspondent à aucun comportement de vol connu.
+        let zigzag = detectZigzagPattern(points2D)
+
         return TrajectoryResult(
             points2D: points2D,
             isLinear: isLinear,
@@ -90,7 +95,9 @@ final class TrajectoryCalculator {
             estimatedGForce: gResult.value,
             gForceConfidence: gResult.confidence,
             exceedsHumanTolerance: gResult.value > humanToleranceG && gResult.confidence > 0.3,
-            curvatureEvents: curvatureEvents
+            curvatureEvents: curvatureEvents,
+            isZigzagPattern: zigzag.isZigzag,
+            directionReversalCount: zigzag.reversalCount
         )
     }
 
@@ -261,6 +268,46 @@ final class TrajectoryCalculator {
     private func center(_ box: CGRect) -> CGPoint {
         CGPoint(x: box.midX, y: box.midY)
     }
+
+    // MARK: - 8. Motif en zigzag
+
+    /// Détecte une alternance de sens de virage (gauche-droite-gauche...) sur la trajectoire écran —
+    /// le signal caractéristique décrit pour une observation d'OVNI, distinct d'une simple trajectoire
+    /// irrégulière (déjà couverte par le R² de linéarité) : ici on regarde spécifiquement si les
+    /// virages successifs CHANGENT DE SENS, plutôt que de courber continuellement dans une seule
+    /// direction (ce que ferait un avion, un drone ou un satellite en virage).
+    private func detectZigzagPattern(_ points: [CGPoint]) -> (isZigzag: Bool, reversalCount: Int) {
+        guard points.count >= 4 else { return (false, 0) }
+
+        // Seuil minimal pour qu'un changement de direction compte comme un vrai "virage" et non
+        // du bruit de détection pixel par pixel.
+        let minTurnDegrees: Double = 12
+
+        var signs: [Int] = []
+        for i in 1..<(points.count - 1) {
+            let v1 = CGVector(dx: points[i].x - points[i-1].x, dy: points[i].y - points[i-1].y)
+            let v2 = CGVector(dx: points[i+1].x - points[i].x, dy: points[i+1].y - points[i].y)
+            let len1 = (v1.dx * v1.dx + v1.dy * v1.dy).squareRoot()
+            let len2 = (v2.dx * v2.dx + v2.dy * v2.dy).squareRoot()
+            guard len1 > 0.0001, len2 > 0.0001 else { continue }
+
+            let cross = v1.dx * v2.dy - v1.dy * v2.dx
+            let dot = v1.dx * v2.dx + v1.dy * v2.dy
+            let turnDegrees = atan2(cross, dot) * 180 / .pi
+            guard abs(turnDegrees) >= minTurnDegrees else { continue }
+
+            signs.append(turnDegrees > 0 ? 1 : -1)
+        }
+        guard signs.count >= 3 else { return (false, 0) }
+
+        var reversals = 0
+        for i in 1..<signs.count where signs[i] != signs[i - 1] {
+            reversals += 1
+        }
+
+        // Au moins 2 changements de sens successifs (gauche-droite-gauche) : motif zigzag typique.
+        return (reversals >= 2, reversals)
+    }
 }
 
 // MARK: - Types
@@ -291,8 +338,10 @@ struct TrajectoryResult {
     var gForceConfidence: Double = 0
     var exceedsHumanTolerance: Bool = false
     var curvatureEvents: [CurvatureEvent] = []
+    var isZigzagPattern: Bool = false        // alternance gauche-droite typique d'une observation d'OVNI
+    var directionReversalCount: Int = 0
 
     static func insufficientData(points2D: [CGPoint]) -> TrajectoryResult {
-        TrajectoryResult(points2D: points2D, isLinear: true, linearityR2: 0, maxAngularAccelerationDegPerS2: 0, angularVelocitiesDegPerS: [], estimatedGForce: 0, gForceConfidence: 0, exceedsHumanTolerance: false, curvatureEvents: [])
+        TrajectoryResult(points2D: points2D, isLinear: true, linearityR2: 0, maxAngularAccelerationDegPerS2: 0, angularVelocitiesDegPerS: [], estimatedGForce: 0, gForceConfidence: 0, exceedsHumanTolerance: false, curvatureEvents: [], isZigzagPattern: false, directionReversalCount: 0)
     }
 }
