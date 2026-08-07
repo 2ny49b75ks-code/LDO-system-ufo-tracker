@@ -49,7 +49,10 @@ final class SessionAnalyzer: ObservableObject {
             // forget ») pour pouvoir prévenir l'utilisateur si ça échoue — une permission Photos
             // refusée échouait auparavant en silence (seul un log #if DEBUG, invisible en TestFlight).
             let photoSaveSemaphore = DispatchSemaphore(value: 0)
-            var photosSaved = true
+            // Défaut à `false` (pas `true`) : si le délai de 15s expire avant la confirmation de
+            // PhotoLibrarySaver (première demande de permission Photos lente à répondre, par ex.),
+            // on veut que ça compte comme un échec visible plutôt qu'un faux succès silencieux.
+            var photosSaved = false
             PhotoLibrarySaver.savePhotos(result.photosWithOverlays) { success in
                 photosSaved = success
                 photoSaveSemaphore.signal()

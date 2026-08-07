@@ -53,7 +53,12 @@ enum PhotoLibrarySaver {
 
     static func savePhotos(_ images: [CGImage], completion: ((Bool) -> Void)? = nil) {
         guard !images.isEmpty else {
-            completion?(true)
+            // Une analyse terminée produit toujours 3 photos (voir PhotoComposer) — un tableau vide
+            // ici signifie que l'extraction d'images a échoué en amont, pas qu'il n'y avait
+            // légitimement rien à sauvegarder. Le signaler comme un échec permet à ResultsView
+            // d'afficher l'avertissement plutôt que de laisser croire que tout s'est bien passé.
+            debugLog("savePhotos : aucune photo à sauvegarder (extraction d'images vide en amont)")
+            completion?(false)
             return
         }
         PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
