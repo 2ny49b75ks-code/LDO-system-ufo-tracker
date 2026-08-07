@@ -52,9 +52,9 @@ struct AnalysisFlowView: View {
                     videoURL: videoURL,
                     initialMode: initialMode,
                     onCancel: { dismiss() },
-                    onConfirm: { clipRange, mode in
+                    onConfirm: { clipRange, mode, hintPoint in
                         step = .analyzing
-                        analyzer.analyze(videoURL: videoURL, poses: poses, clipRange: clipRange, mode: mode, captureLocation: captureLocation) { session in
+                        analyzer.analyze(videoURL: videoURL, poses: poses, clipRange: clipRange, mode: mode, captureLocation: captureLocation, hintPoint: hintPoint) { session in
                             step = .results(session)
                         }
                     }

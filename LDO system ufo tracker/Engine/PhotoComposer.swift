@@ -91,8 +91,15 @@ enum PhotoComposer {
         let originX = min(max(0, centerX - cropWidth / 2), width - cropWidth)
         let originY = min(max(0, centerY - cropHeight / 2), height - cropHeight)
 
-        let rect = CGRect(x: originX, y: originY, width: cropWidth, height: cropHeight).integral
-        guard let cropped = image.cropping(to: rect) else { return nil }
+        // `.integral` arrondit vers l'extérieur et peut pousser le rect 1px hors des limites de
+        // l'image (par ex. originX + cropWidth légèrement > width après arrondi) — sur un CGImage
+        // réel décodé HEVC, `cropping(to:)` retourne alors `nil` plutôt que de tronquer, faisant
+        // silencieusement disparaître la photo « zoom max »/« zoom ×2 » du résultat final. On
+        // reclippe explicitement le rect aux bornes réelles de l'image après l'arrondi pour garantir
+        // qu'il reste toujours valide.
+        let bounds = CGRect(x: 0, y: 0, width: width, height: height)
+        let rect = CGRect(x: originX, y: originY, width: cropWidth, height: cropHeight).integral.intersection(bounds)
+        guard rect.width >= 1, rect.height >= 1, let cropped = image.cropping(to: rect) else { return nil }
         return upscale(cropped, toWidth: image.width, height: image.height) ?? cropped
     }
 

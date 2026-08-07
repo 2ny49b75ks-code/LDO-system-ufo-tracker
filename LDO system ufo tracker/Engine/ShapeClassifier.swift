@@ -8,6 +8,7 @@ import Foundation
 import CoreImage
 import CoreImage.CIFilterBuiltins
 import CoreGraphics
+import Vision
 
 /// Étape 3 : classification de la forme + isolement de la zone lumineuse.
 ///
@@ -25,6 +26,16 @@ final class ShapeClassifier {
     func classifyShape(detections: [Detection], frames: [CapturedFrame]) -> ShapeResult {
         guard detections.count >= 3 else {
             return ShapeResult(label: "Données insuffisantes", confidence: 0, luminousRegion: nil)
+        }
+
+        // 0. Détection d'une main humaine (Vision, sur l'appareil, aucun modèle personnalisé requis) :
+        // une main agitée devant la caméra produit un signal de mouvement (oscillation, déplacement)
+        // qui ressemble à s'y méprendre à un oiseau ou un insecte pour les heuristiques ci-dessous —
+        // ce test prioritaire l'identifie explicitement plutôt que de la confondre avec un animal.
+        if detectHand(in: frames, detections: detections) {
+            let midDetection = detections[safe: detections.count / 2]
+            let luminous = midDetection.flatMap { isolateLuminousRegion(for: $0, frames: frames) }
+            return ShapeResult(label: "Main détectée", confidence: 0.9, luminousRegion: luminous)
         }
 
         // 1. Signal de mouvement : amplitude et régularité des oscillations de position.
@@ -85,6 +96,29 @@ final class ShapeClassifier {
         // (isolateLuminousRegion), extrudé sur une faible épaisseur, exporté en .usdz via
         // Entity.write(to:). Omis ici (dépend du runtime RealityKit, non disponible hors iOS).
         return nil
+    }
+
+    /// Échantillonne quelques images (jusqu'à 5) autour des détections et cherche une main humaine
+    /// confiante via `VNDetectHumanHandPoseRequest` — API Vision native, aucun modèle CoreML
+    /// personnalisé nécessaire. Une seule image concluante suffit : la main n'a pas besoin d'être
+    /// visible sur toute la séquence pour être la véritable explication de l'observation.
+    private func detectHand(in frames: [CapturedFrame], detections: [Detection]) -> Bool {
+        let sampleTimestamps = Set(detections.prefix(5).map { $0.timestamp })
+        let samples = frames.filter { sampleTimestamps.contains($0.timestamp) }
+        let framesToCheck = samples.isEmpty ? Array(frames.prefix(5)) : samples
+
+        for frame in framesToCheck {
+            let request = VNDetectHumanHandPoseRequest()
+            request.maximumHandCount = 1
+            let handler = VNImageRequestHandler(cgImage: frame.image, options: [:])
+            guard (try? handler.perform([request])) != nil,
+                  let observation = request.results?.first
+            else { continue }
+            if observation.confidence > 0.6 {
+                return true
+            }
+        }
+        return false
     }
 
     // MARK: - Signaux

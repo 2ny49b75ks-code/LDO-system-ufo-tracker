@@ -14,6 +14,9 @@ struct AnalysisSession: Identifiable, Equatable {
     let id = UUID()
     var videoURLWithOverlays: URL?
     var photosWithOverlays: [CGImage] = []
+    /// `false` si la sauvegarde dans Photos a échoué (permission refusée, etc.) — voir
+    /// `SessionAnalyzer`, affiché explicitement dans ResultsView plutôt que d'échouer en silence.
+    var photosSavedToLibrary: Bool = true
 
     var shapeDescription: String = ""
     var shapeConfidence: Double = 0
@@ -89,7 +92,10 @@ final class AnalysisEngine {
     /// `progress` est appelé après chaque étape terminée, avec la fraction complétée (0...1) et un
     /// libellé décrivant l'étape suivante — utilisé par `SessionAnalyzer` pour afficher une
     /// progression réelle pendant le calcul (onglets LIVE et Bibliothèque).
-    func analyze(frames: [CapturedFrame], videoURL: URL?, mode: CaptureMode, captureLocation: CLCoordinate? = nil, progress: ((Double, String) -> Void)? = nil) -> AnalysisSession {
+    /// `hintPoint` : point que l'utilisateur a touché dans `ClipTrimView` pour indiquer l'objet à
+    /// analyser (repère Vision, normalisé, origine bas-gauche) — `nil` si aucun point touché, la
+    /// détection reste alors entièrement automatique (comportement d'avant).
+    func analyze(frames: [CapturedFrame], videoURL: URL?, mode: CaptureMode, captureLocation: CLCoordinate? = nil, hintPoint: CGPoint? = nil, progress: ((Double, String) -> Void)? = nil) -> AnalysisSession {
         var session = AnalysisSession()
         session.timestamp = Date()
         session.captureLocation = captureLocation
@@ -109,21 +115,32 @@ final class AnalysisEngine {
         var trackedObjects: [TrackedObject]
         switch mode {
         case .night:
-            trackedObjects = motionDetector.detectByLuminosity(in: frames)
+            trackedObjects = motionDetector.detectByLuminosity(in: frames, hintPoint: hintPoint)
             debugLog("détection par luminosité : \(trackedObjects.first?.detections.count ?? 0) détection(s) sur \(frames.count) image(s)")
             if trackedObjects.isEmpty {
                 trackedObjects = motionDetector.detectMovingObjects(in: frames)
                 debugLog("repli détection par mouvement : \(trackedObjects.first?.detections.count ?? 0) détection(s)")
             }
         case .day:
-            trackedObjects = motionDetector.detectDarkObjectOnBrightSky(in: frames)
+            trackedObjects = motionDetector.detectDarkObjectOnBrightSky(in: frames, hintPoint: hintPoint)
             debugLog("détection silhouette sombre sur ciel clair (mode jour) : \(trackedObjects.first?.detections.count ?? 0) détection(s)")
             if trackedObjects.isEmpty {
                 trackedObjects = motionDetector.detectMovingObjects(in: frames)
                 debugLog("repli détection par mouvement (mode jour) : \(trackedObjects.first?.detections.count ?? 0) détection(s)")
             }
         }
-        let mainObject = trackedObjects.max(by: { $0.detections.count < $1.detections.count })
+        // Sélection de l'objet principal : par défaut celui suivi le plus longtemps. Si l'utilisateur
+        // a touché un point, on privilégie plutôt l'objet dont la trajectoire passe le plus près de
+        // ce point — c'est lui qui a été explicitement désigné, même s'il a moins de détections
+        // qu'un autre artefact suivi plus longtemps ailleurs dans le cadre.
+        let mainObject: TrackedObject?
+        if let hintPoint, !trackedObjects.isEmpty {
+            mainObject = trackedObjects.min { lhs, rhs in
+                averageDistance(from: lhs, to: hintPoint) < averageDistance(from: rhs, to: hintPoint)
+            }
+        } else {
+            mainObject = trackedObjects.max(by: { $0.detections.count < $1.detections.count })
+        }
         let detections = mainObject?.detections ?? []
 
         report(1, "Classification de la forme…")
@@ -141,7 +158,13 @@ final class AnalysisEngine {
         session.estimatedAltitudeMeters = dist.altitudeMeters
         session.distanceConfidence = dist.confidence
         session.distanceMethod = dist.method
-        let reliableDistance = dist.confidence > 0.3 ? dist.distanceMeters : nil
+        // BUG CORRIGÉ : le seuil était `> 0.3` alors que `DistanceEstimator.confidence` ne dépasse
+        // jamais 0.3 (0.15 pour une forme non identifiée, 0.3 au mieux pour une forme identifiée) —
+        // la vitesse et les forces G étaient donc TOUJOURS "non calculables", peu importe la qualité
+        // réelle de l'estimation. `> 0` laisse passer toute distance réellement calculée (les seuls
+        // cas à confiance 0 sont "Aucune donnée" / "Taille apparente nulle", de vrais échecs), tout
+        // en gardant l'indice de confiance affiché à l'utilisateur pour juger de sa fiabilité.
+        let reliableDistance = dist.confidence > 0 ? dist.distanceMeters : nil
 
         report(3, "Calcul de la trajectoire…")
         // Étape 4 : trajectoire réelle (angulaire, corrigée du mouvement de la caméra) + forces G
@@ -192,7 +215,7 @@ final class AnalysisEngine {
             soundResult = result
             soundSemaphore.signal()
         }
-        _ = soundSemaphore.wait(timeout: .now() + 10)
+        _ = soundSemaphore.wait(timeout: .now() + 20)
         session.soundClassification = soundResult.label
         session.soundMatchedCategory = soundResult.matchedCategory
         session.soundConfidence = soundResult.confidence
@@ -221,6 +244,17 @@ final class AnalysisEngine {
 
         report(9, "Terminé")
         return session
+    }
+
+    /// Distance moyenne entre les détections d'un objet suivi et un point de référence (repère
+    /// Vision, normalisé) — sert à retenir l'objet le plus proche du point touché par l'utilisateur.
+    private func averageDistance(from object: TrackedObject, to point: CGPoint) -> CGFloat {
+        guard !object.detections.isEmpty else { return .greatestFiniteMagnitude }
+        let total = object.detections.reduce(CGFloat(0)) { sum, detection in
+            let center = CGPoint(x: detection.boundingBox.midX, y: detection.boundingBox.midY)
+            return sum + hypot(center.x - point.x, center.y - point.y)
+        }
+        return total / CGFloat(object.detections.count)
     }
 }
 

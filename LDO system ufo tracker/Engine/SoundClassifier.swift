@@ -7,6 +7,7 @@
 import Foundation
 import SoundAnalysis
 import AVFoundation
+import AVFAudio
 
 /// Étape 7 : analyse du son de la vidéo.
 /// Utilise le classificateur sonore intégré d'Apple (SoundAnalysis / SNClassifySoundRequest),
@@ -38,6 +39,23 @@ final class SoundClassifier {
         guard let videoURL else {
             completion(SoundResult(label: "Aucune piste audio disponible", matchedCategory: nil, confidence: 0))
             return
+        }
+
+        // Diagnostic explicite plutôt qu'un "aucun son détecté" trompeur : sans permission micro,
+        // l'enregistrement n'a jamais capté d'audio du tout (voir CaptureManager), donc TOUTE analyse
+        // échouera silencieusement — l'utilisateur a besoin de savoir que c'est un réglage à changer
+        // dans Réglages > LDO > Micro, pas un vrai "aucun son distinctif".
+        switch AVAudioApplication.shared.recordPermission {
+        case .denied:
+            completion(SoundResult(label: "Micro refusé — activez-le dans Réglages > LDO pour analyser le son", matchedCategory: nil, confidence: 0))
+            return
+        case .undetermined:
+            completion(SoundResult(label: "Permission micro jamais accordée — activez-la dans Réglages > LDO", matchedCategory: nil, confidence: 0))
+            return
+        case .granted:
+            break
+        @unknown default:
+            break
         }
 
         do {

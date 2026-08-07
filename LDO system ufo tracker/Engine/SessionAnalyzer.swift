@@ -6,6 +6,7 @@
 
 import Foundation
 import Combine
+import CoreGraphics
 
 /// Orchestre l'analyse d'une vidéo déjà enregistrée (onglet LIVE, avec pose ARKit) ou importée
 /// depuis la bibliothèque (sans pose), avec progression publiée pour l'affichage SwiftUI —
@@ -27,6 +28,7 @@ final class SessionAnalyzer: ObservableObject {
         clipRange: ClosedRange<Double>? = nil,
         mode: CaptureMode,
         captureLocation: CLCoordinate? = nil,
+        hintPoint: CGPoint? = nil,
         completion: @escaping (AnalysisSession) -> Void
     ) {
         isAnalyzing = true
@@ -36,14 +38,25 @@ final class SessionAnalyzer: ObservableObject {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let frames = VideoFrameExtractor.extractFrames(from: videoURL, poses: poses, timeRange: clipRange)
 
-            let result = AnalysisEngine().analyze(frames: frames, videoURL: videoURL, mode: mode, captureLocation: captureLocation) { fraction, label in
+            var result = AnalysisEngine().analyze(frames: frames, videoURL: videoURL, mode: mode, captureLocation: captureLocation, hintPoint: hintPoint) { fraction, label in
                 DispatchQueue.main.async {
                     self?.progress = fraction
                     self?.progressLabel = label
                 }
             }
 
-            PhotoLibrarySaver.savePhotos(result.photosWithOverlays)
+            // Attend explicitement la confirmation de sauvegarde (au lieu d'un simple « fire and
+            // forget ») pour pouvoir prévenir l'utilisateur si ça échoue — une permission Photos
+            // refusée échouait auparavant en silence (seul un log #if DEBUG, invisible en TestFlight).
+            let photoSaveSemaphore = DispatchSemaphore(value: 0)
+            var photosSaved = true
+            PhotoLibrarySaver.savePhotos(result.photosWithOverlays) { success in
+                photosSaved = success
+                photoSaveSemaphore.signal()
+            }
+            _ = photoSaveSemaphore.wait(timeout: .now() + 15)
+            result.photosSavedToLibrary = photosSaved
+
             // Copie aussi le résultat vidéo (avec incrustations) dans Photos — seulement si l'export
             // a réellement produit un nouveau fichier distinct de la vidéo source. Si l'export a
             // échoué, `videoURLWithOverlays` retombe sur `videoURL` lui-même (déjà dans Photos pour

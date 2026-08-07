@@ -18,7 +18,26 @@ final class VerdictCalculator {
     /// pour juger si une vitesse mesurée dépasse largement tout aéronef militaire connu.
     private let f35MaxSpeedKmh: Double = 1960.0
 
+    /// Confiance à partir de laquelle une forme identifiée (main, insecte, oiseau, avion/satellite)
+    /// est traitée comme une explication connue plutôt qu'un simple facteur parmi d'autres.
+    private let confidentKnownShapeThreshold: Double = 0.4
+
     func computeVerdict(session: AnalysisSession, shape: ShapeResult) -> VerdictResult {
+        // 0. Sur-priorité absolue : si la forme est identifiée avec une confiance suffisante comme
+        //    quelque chose de connu (main, insecte, oiseau, avion/satellite) — pas juste "non
+        //    identifiée avec certitude" — aucun autre facteur ne doit pouvoir faire remonter le
+        //    verdict. Une main qui bouge devant la caméra ne devient pas un phénomène ambigu parce
+        //    que sa trajectoire est irrégulière ou que le son est absent : c'est une main.
+        if shape.confidence >= confidentKnownShapeThreshold,
+           !shape.label.contains("non identifiée"),
+           shape.label != "Données insuffisantes" {
+            return VerdictResult(
+                label: "Probablement identifié (objet connu)",
+                percent: 0,
+                factors: ["Forme identifiée avec confiance : \(shape.label) (\(Int(shape.confidence * 100))%) — aucun autre facteur ne peut compenser une identification aussi claire"]
+            )
+        }
+
         var score = 0.0
         var factors: [String] = []
 

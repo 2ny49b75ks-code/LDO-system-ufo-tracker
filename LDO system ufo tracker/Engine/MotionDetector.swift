@@ -95,11 +95,14 @@ final class MotionDetector {
     /// rapport avec un véritable point lumineux isolé sur fond sombre.
     private let darkSceneThreshold: Double = 90   // luminance moyenne 0-255 ; au-dessus, scène jugée normalement éclairée
 
-    func detectByLuminosity(in frames: [CapturedFrame]) -> [TrackedObject] {
+    /// `hintPoint` : point que l'utilisateur a touché dans `ClipTrimView` pour désigner l'objet
+    /// (repère Vision, normalisé) — sert de point de départ à la continuité de suivi (voir
+    /// `brightestBoundingBox`) au lieu de partir sans a priori sur la première image.
+    func detectByLuminosity(in frames: [CapturedFrame], hintPoint: CGPoint? = nil) -> [TrackedObject] {
         guard isDarkScene(frames) else { return [] }
 
         var detections: [Detection] = []
-        var previousCenter: CGPoint?
+        var previousCenter: CGPoint? = hintPoint
         for frame in frames {
             guard let box = brightestBoundingBox(in: frame.image, previousCenter: previousCenter) else { continue }
             detections.append(Detection(boundingBox: box, timestamp: frame.timestamp))
@@ -115,13 +118,15 @@ final class MotionDetector {
     ///
     /// NE S'ACTIVE QUE SUR UNE SCÈNE GLOBALEMENT CLAIRE (ciel de jour) — symétrique du garde-fou de
     /// `detectByLuminosity`.
-    func detectDarkObjectOnBrightSky(in frames: [CapturedFrame]) -> [TrackedObject] {
+    func detectDarkObjectOnBrightSky(in frames: [CapturedFrame], hintPoint: CGPoint? = nil) -> [TrackedObject] {
         guard isBrightScene(frames) else { return [] }
 
         var detections: [Detection] = []
+        var previousCenter: CGPoint? = hintPoint
         for frame in frames {
-            guard let box = darkestBoundingBox(in: frame.image) else { continue }
+            guard let box = darkestBoundingBox(in: frame.image, previousCenter: previousCenter) else { continue }
             detections.append(Detection(boundingBox: box, timestamp: frame.timestamp))
+            previousCenter = CGPoint(x: box.midX, y: box.midY)
         }
         guard detections.count >= 3 else { return [] }
         return [TrackedObject(id: UUID(), detections: detections)]
@@ -247,7 +252,7 @@ final class MotionDetector {
     /// sur l'image telle quelle, on l'applique sur son NÉGATIF — ainsi la silhouette sombre de l'objet
     /// (la partie la plus foncée du ciel clair) devient la région la plus « brillante » sur l'image
     /// inversée, et on réutilise exactement la même logique de seuillage adaptatif que la nuit.
-    private func darkestBoundingBox(in image: CGImage) -> CGRect? {
+    private func darkestBoundingBox(in image: CGImage, previousCenter: CGPoint?) -> CGRect? {
         let ciImage = CIImage(cgImage: image)
         guard let inverted = invertedImage(ciImage) else { return nil }
         guard let threshold = adaptiveBrightnessThreshold(inverted) else { return nil }
@@ -259,6 +264,22 @@ final class MotionDetector {
 
         let candidates = detectContourBoundingBoxes(in: mask)
             .filter { $0.width * $0.height >= minimumBlobArea && $0.width * $0.height <= maximumBlobArea }
+        guard !candidates.isEmpty else { return nil }
+
+        // Même continuité de suivi que `brightestBoundingBox` (voir sa documentation) — évite qu'un
+        // scintillement de contraste fasse sauter la détection d'une silhouette à une autre.
+        if let previousCenter {
+            let maxTrackingDistance: CGFloat = 0.1
+            let nearby = candidates.filter { candidate in
+                let center = CGPoint(x: candidate.midX, y: candidate.midY)
+                let dx = center.x - previousCenter.x
+                let dy = center.y - previousCenter.y
+                return (dx * dx + dy * dy).squareRoot() <= maxTrackingDistance
+            }
+            if let closest = nearby.min(by: { distanceSquared($0, to: previousCenter) < distanceSquared($1, to: previousCenter) }) {
+                return closest
+            }
+        }
 
         return candidates.max { $0.width * $0.height < $1.width * $1.height }
     }

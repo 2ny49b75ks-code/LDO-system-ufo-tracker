@@ -7,6 +7,7 @@
 import SwiftUI
 import MapKit
 import CoreLocation
+import UIKit
 
 /// Page annexe claire présentée après l'analyse : toutes les informations demandées (points 1 à 9)
 /// plus le verdict final et le pourcentage de possibilité.
@@ -39,6 +40,12 @@ struct ResultsView: View {
                                 }
                             }
                         }
+                    }
+
+                    if !session.photosSavedToLibrary {
+                        Text("⚠️ La sauvegarde dans Photos a échoué — vérifiez la permission photothèque de LDO dans Réglages.")
+                            .font(.caption)
+                            .foregroundColor(.orange)
                     }
 
                     Group {
@@ -87,8 +94,20 @@ struct ResultsView: View {
                             Text(String(format: "Latitude : %.5f — Longitude : %.5f", coordinate.lat, coordinate.lon))
                                 .font(.caption)
                                 .foregroundColor(.secondary)
+                        } else if CLLocationManager().authorizationStatus == .denied {
+                            Text("Position GPS refusée pour LDO.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Button {
+                                if let url = URL(string: UIApplication.openSettingsURLString) {
+                                    UIApplication.shared.open(url)
+                                }
+                            } label: {
+                                Text("Ouvrir Réglages")
+                                    .font(.caption.bold())
+                            }
                         } else {
-                            Text("Position GPS non disponible (vidéo importée depuis la bibliothèque, ou permission de localisation non accordée).")
+                            Text("Position GPS non disponible (vidéo importée depuis la bibliothèque, ou position non obtenue à temps lors de l'enregistrement).")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -159,18 +178,33 @@ struct CaptureLocationMapView: View {
         CLLocationCoordinate2D(latitude: coordinate.lat, longitude: coordinate.lon)
     }
 
+    /// Étendue à l'échelle du pays (plutôt qu'un simple quartier/ville) — suffisant pour situer
+    /// l'observation dans son contexte géographique large, tel que demandé.
+    private static let countryScaleSpan = MKCoordinateSpan(latitudeDelta: 20, longitudeDelta: 20)
+
     var body: some View {
         Map(initialPosition: .region(MKCoordinateRegion(
             center: coordinate2D,
-            span: MKCoordinateSpan(latitudeDelta: 8, longitudeDelta: 8)
+            span: Self.countryScaleSpan
         ))) {
             Annotation("Lieu de capture", coordinate: coordinate2D) {
-                Image(systemName: "scope")
-                    .font(.title2)
-                    .foregroundColor(.red)
+                ZStack {
+                    Circle()
+                        .stroke(Color.ldoSignal, lineWidth: 3)
+                        .frame(width: 26, height: 26)
+                    Circle()
+                        .fill(Color.ldoSignal)
+                        .frame(width: 9, height: 9)
+                }
+                .shadow(color: Color.ldoSignal.opacity(0.6), radius: 4)
             }
         }
     }
+}
+
+extension Color {
+    /// Vert signature LDO (#39FF14), utilisé partout dans l'app et le site web.
+    static let ldoSignal = Color(red: Double(0x39) / 255, green: Double(0xFF) / 255, blue: Double(0x14) / 255)
 }
 
 /// Vue MapKit affichant la trajectoire (vue aérienne) sous forme de polyligne rouge.
