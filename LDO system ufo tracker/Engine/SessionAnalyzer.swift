@@ -45,28 +45,6 @@ final class SessionAnalyzer: ObservableObject {
                 }
             }
 
-            // Capture d'écran de l'écran de résultats complet (mesures, cartes, verdict — voir
-            // ResultsScreenshotRenderer), ajoutée À LA SUITE des 3 photos recadrées avant la
-            // sauvegarde dans Photos — demande explicite de Jean-David. Le rendu SwiftUI/MapKit doit
-            // se faire sur le fil principal (contrairement au reste de ce pipeline, qui tourne en
-            // arrière-plan) : on y bascule le temps du rendu via un sémaphore, même pont utilisé
-            // ailleurs dans ce pipeline (SoundClassifier, sauvegarde Photos) pour ponter une API
-            // asynchrone vers ce contexte synchrone.
-            let screenshotSemaphore = DispatchSemaphore(value: 0)
-            var resultsScreenshot: CGImage?
-            DispatchQueue.main.async {
-                Task { @MainActor in
-                    resultsScreenshot = await ResultsScreenshotRenderer.render(session: result)
-                    screenshotSemaphore.signal()
-                }
-            }
-            _ = screenshotSemaphore.wait(timeout: .now() + 8)
-
-            var photosToSave = result.photosWithOverlays
-            if let resultsScreenshot {
-                photosToSave.append(resultsScreenshot)
-            }
-
             // Attend explicitement la confirmation de sauvegarde (au lieu d'un simple « fire and
             // forget ») pour pouvoir prévenir l'utilisateur si ça échoue — une permission Photos
             // refusée échouait auparavant en silence (seul un log #if DEBUG, invisible en TestFlight).
@@ -75,7 +53,7 @@ final class SessionAnalyzer: ObservableObject {
             // PhotoLibrarySaver (première demande de permission Photos lente à répondre, par ex.),
             // on veut que ça compte comme un échec visible plutôt qu'un faux succès silencieux.
             var photosSaved = false
-            PhotoLibrarySaver.savePhotos(photosToSave) { success in
+            PhotoLibrarySaver.savePhotos(result.photosWithOverlays) { success in
                 photosSaved = success
                 photoSaveSemaphore.signal()
             }
@@ -94,6 +72,18 @@ final class SessionAnalyzer: ObservableObject {
             DispatchQueue.main.async {
                 self?.isAnalyzing = false
                 completion(result)
+
+                // Capture d'écran de l'écran de résultats complet (mesures, cartes, verdict) —
+                // sauvegardée dans Photos À LA SUITE des 3 photos ci-dessus, demande explicite de
+                // Jean-David. Faite APRÈS `completion(result)` (donc après que ResultsView soit déjà
+                // affichée à l'écran), délibérément : un rendu hors-écran d'une DEUXIÈME copie de la
+                // même carte MapKit juste avant l'affichage réel s'est avéré interférer avec le
+                // rendu de la carte réelle à l'écran (carte manquante signalée par Jean-David sur un
+                // build précédent) — les deux rendus ne se chevauchent donc plus dans le temps.
+                Task { @MainActor in
+                    guard let screenshot = await ResultsScreenshotRenderer.render(session: result) else { return }
+                    PhotoLibrarySaver.savePhotos([screenshot])
+                }
             }
         }
     }
