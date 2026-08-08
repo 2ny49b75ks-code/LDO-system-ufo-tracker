@@ -105,6 +105,20 @@ final class CaptureManager: NSObject, ObservableObject {
         // `configureMaximumLidar()` ci-dessus, via `bestAvailableVideoFormat()`.
     }
 
+    /// Démarre la demande de position GPS dès l'ouverture de l'écran caméra, plutôt que d'attendre
+    /// le début de l'enregistrement (voir `toggleRecording`, qui la redemande aussi en secours). Un
+    /// correctif nécessaire : `CLLocationManager.requestLocation()` peut prendre plusieurs secondes
+    /// (position GPS froide, intérieur, etc.) — si on ne la demande qu'au moment d'appuyer sur
+    /// enregistrer, un enregistrement court (un avion filmé rapidement, typiquement) peut se terminer
+    /// avant que la position soit revenue, laissant `lastKnownLocation` vide même avec la permission
+    /// accordée (signalé par Jean-David — permission confirmée accordée, position quand même absente).
+    /// En la demandant dès l'ouverture de l'onglet LIVE, le GPS a tout le temps que l'utilisateur
+    /// passe à cadrer avant de filmer pour se fixer.
+    func warmUpLocation() {
+        locationProvider.requestAuthorizationIfNeeded()
+        locationProvider.captureCurrentLocation()
+    }
+
     private static func bestAvailableVideoFormat() -> ARConfiguration.VideoFormat? {
         ARWorldTrackingConfiguration.supportedVideoFormats.max {
             $0.imageResolution.width * $0.imageResolution.height

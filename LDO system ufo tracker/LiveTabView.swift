@@ -89,6 +89,10 @@ struct LiveTabView: View {
             // Démarrage automatique : suivi ARKit + résolution vidéo HD
             capture.configureARTracking()
             capture.configureHDVideo()
+            // Demande la position GPS dès maintenant plutôt qu'au moment d'appuyer sur enregistrer —
+            // voir CaptureManager.warmUpLocation() : lui laisse le temps de se fixer avant qu'un
+            // enregistrement court se termine.
+            capture.warmUpLocation()
         }
         .sheet(isPresented: $showRecordings) {
             RecordingsListView(isPresented: $showRecordings)
