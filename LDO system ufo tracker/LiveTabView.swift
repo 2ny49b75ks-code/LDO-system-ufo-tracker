@@ -14,14 +14,38 @@ struct LiveTabView: View {
     @ObservedObject var capture: CaptureManager
     @Binding var selectedTab: AppTab
     @State private var showRecordings = false
+    /// Zoom au début du geste de pincement en cours, pour calculer le zoom cumulé sans à-coup
+    /// (voir le `MagnificationGesture` ci-dessous).
+    @State private var zoomAtGestureStart: CGFloat = 1.0
 
     var body: some View {
         ZStack {
-            CameraPreviewView(session: capture.session)
+            CameraPreviewView(session: capture.session, zoomFactor: capture.zoomFactor)
                 .ignoresSafeArea()
+                .gesture(
+                    MagnificationGesture()
+                        .onChanged { value in
+                            let candidate = zoomAtGestureStart * value
+                            capture.zoomFactor = min(max(candidate, CaptureManager.minZoomFactor), CaptureManager.maxZoomFactor)
+                        }
+                        .onEnded { _ in
+                            zoomAtGestureStart = capture.zoomFactor
+                        }
+                )
 
             VStack {
                 AppTopBar(selectedTab: $selectedTab, trackingActive: capture.trackingActive)
+
+                if capture.zoomFactor > CaptureManager.minZoomFactor {
+                    Text(String(format: "%.1f×", capture.zoomFactor))
+                        .font(.subheadline.bold())
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(.black.opacity(0.5))
+                        .clipShape(Capsule())
+                        .padding(.top, 8)
+                }
 
                 Spacer()
 

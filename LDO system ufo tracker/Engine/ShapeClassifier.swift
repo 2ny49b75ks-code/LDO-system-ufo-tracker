@@ -23,7 +23,7 @@ final class ShapeClassifier {
 
     private let ciContext = CIContext()
 
-    func classifyShape(detections: [Detection], frames: [CapturedFrame]) -> ShapeResult {
+    func classifyShape(detections: [Detection], frames: [CapturedFrame], mode: CaptureMode) -> ShapeResult {
         guard detections.count >= 3 else {
             return ShapeResult(label: "Données insuffisantes", confidence: 0, luminousRegion: nil)
         }
@@ -50,7 +50,7 @@ final class ShapeClassifier {
         let luminous = midDetection.flatMap { isolateLuminousRegion(for: $0, frames: frames) }
 
         // 4. Classification heuristique combinant ces signaux.
-        let (label, confidence) = heuristicClassify(motion: motion, sizeVariability: sizeVariability)
+        let (label, confidence) = heuristicClassify(motion: motion, sizeVariability: sizeVariability, mode: mode)
 
         return ShapeResult(label: label, confidence: confidence, luminousRegion: luminous)
     }
@@ -78,12 +78,49 @@ final class ShapeClassifier {
         guard let isolated = controls.outputImage else { return nil }
 
         guard let averages = try? averageLuminance(of: isolated) else { return nil }
+        let irregularity = contourIrregularity(of: isolated)
 
         return LuminousRegion(
             boundingBoxInImage: cropRect,
             averageBrightness: averages.brightness,
-            averageColor: averages.color
+            averageColor: averages.color,
+            contourIrregularity: irregularity
         )
+    }
+
+    /// Irrégularité du contour de la tache lumineuse isolée (0 = tache ronde et nette proche d'un
+    /// point source ; proche de 1 = contour amorphe/irrégulier — bords qui débordent, forme non
+    /// circulaire). Facteur additionnel PONDÉRÉ pour le verdict (voir `VerdictCalculator`), pas une
+    /// règle absolue : une tache floue/irrégulière peut aussi bien être un objet réel dont le contour
+    /// est net mais mal focalisé qu'un artefact optique, d'où un poids modéré plutôt qu'un plancher.
+    ///
+    /// Méthode : seuille l'image isolée (déjà contrastée par `isolateLuminousRegion` ci-dessus) et
+    /// mesure le taux de remplissage de pixels "clairs" dans sa boîte englobante — une source
+    /// ponctuelle nette remplit une forme proche d'un disque (~78,5% d'une boîte carrée) ; un
+    /// contour très irrégulier remplit soit beaucoup moins (bords dentelés, trous), soit très
+    /// différemment de ce ratio.
+    private func contourIrregularity(of image: CIImage) -> Double {
+        let extent = image.extent
+        guard extent.width > 0, extent.height > 0 else { return 0 }
+
+        let sampleSize = 24
+        var bitmap = [UInt8](repeating: 0, count: sampleSize * sampleSize * 4)
+        ciContext.render(
+            image, toBitmap: &bitmap, rowBytes: sampleSize * 4,
+            bounds: CGRect(x: extent.minX, y: extent.minY, width: extent.width, height: extent.height),
+            format: .RGBA8, colorSpace: nil
+        )
+
+        var brightPixels = 0
+        for i in stride(from: 0, to: bitmap.count, by: 4) {
+            let luminance = 0.299 * Double(bitmap[i]) + 0.587 * Double(bitmap[i + 1]) + 0.114 * Double(bitmap[i + 2])
+            if luminance > 128 { brightPixels += 1 }
+        }
+        let fillRatio = Double(brightPixels) / Double(sampleSize * sampleSize)
+
+        // Taux de remplissage idéal d'un disque net dans sa boîte englobante carrée : π/4.
+        let idealCircularFillRatio = Double.pi / 4
+        return min(abs(fillRatio - idealCircularFillRatio) / idealCircularFillRatio, 1.0)
     }
 
     /// Génère une approximation 3D très simplifiée : extrusion de la silhouette lumineuse 2D en un
@@ -149,16 +186,23 @@ final class ShapeClassifier {
         return Double(sqrt(variance) / mean) // coefficient de variation : 0 = taille parfaitement stable
     }
 
-    private func heuristicClassify(motion: MotionSignature, sizeVariability: Double) -> (String, Double) {
-        // Oscillation très fréquente + déplacement irrégulier de faible amplitude à l'écran =>
-        // signature typique d'un insecte volant tout près de l'objectif (cause très fréquente de
-        // faux signalements d'OVNI).
-        if motion.oscillationRate > 0.5 && motion.averageDisplacementPerFrame < 0.05 {
-            return ("Probable insecte proche de l'objectif", 0.55)
-        }
-        // Oscillation modérée et régulière => battements d'ailes, évoque un oiseau.
-        if motion.oscillationRate > 0.2 && motion.oscillationRate <= 0.5 {
-            return ("Probable oiseau (mouvement oscillant régulier)", 0.45)
+    private func heuristicClassify(motion: MotionSignature, sizeVariability: Double, mode: CaptureMode) -> (String, Double) {
+        // En Mode Nuit, la détection ne porte que sur une source lumineuse isolée (voir
+        // MotionDetector.detectByLuminosity) — un oiseau ou un insecte en vol de nuit ne produit pas
+        // de lumière propre, donc ces deux explications sont exclues d'office (règle explicite de
+        // Jean-David) : seule une trajectoire de type avion/satellite peut expliquer l'objet, sinon
+        // il reste non identifié.
+        if mode == .day {
+            // Oscillation très fréquente + déplacement irrégulier de faible amplitude à l'écran =>
+            // signature typique d'un insecte volant tout près de l'objectif (cause très fréquente de
+            // faux signalements d'OVNI).
+            if motion.oscillationRate > 0.5 && motion.averageDisplacementPerFrame < 0.05 {
+                return ("Probable insecte proche de l'objectif", 0.55)
+            }
+            // Oscillation modérée et régulière => battements d'ailes, évoque un oiseau.
+            if motion.oscillationRate > 0.2 && motion.oscillationRate <= 0.5 {
+                return ("Probable oiseau (mouvement oscillant régulier)", 0.45)
+            }
         }
         // Déplacement très linéaire, taille stable => avion ou satellite à distance constante.
         if motion.oscillationRate < 0.1 && sizeVariability < 0.15 {
@@ -202,6 +246,9 @@ struct LuminousRegion {
     let boundingBoxInImage: CGRect
     let averageBrightness: Double     // 0 (noir) à 1 (blanc pur)
     let averageColor: (r: Double, g: Double, b: Double)
+    /// 0 = tache ronde et nette (point source) ; proche de 1 = contour amorphe/irrégulier.
+    /// Voir `ShapeClassifier.contourIrregularity`. Facteur pondéré additionnel pour le verdict.
+    let contourIrregularity: Double
 }
 
 struct ShapeResult {

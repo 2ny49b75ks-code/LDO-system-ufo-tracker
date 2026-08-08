@@ -11,6 +11,7 @@ import CoreMedia
 import ARKit
 import CoreImage
 import CoreLocation
+import simd
 
 /// Étape 1 : capture vidéo HD via ARKit (position/orientation de caméra à chaque image, utilisées
 /// pour la triangulation angulaire — voir DistanceEstimator). L'enregistrement se contente de
@@ -34,6 +35,15 @@ final class CaptureManager: NSObject, ObservableObject {
     /// Choix Nuit/Jour de l'utilisateur (voir `CaptureMode`), réglé par la vue hôte avant
     /// l'enregistrement et sauvegardé avec la vidéo pour déterminer la stratégie d'analyse.
     @Published var captureMode: CaptureMode = .night
+
+    /// Zoom numérique appliqué à l'aperçu ET à l'enregistrement (vidéo + images d'analyse) — voir
+    /// `CameraPreviewView` (même recadrage visuel) et `appendVideoFrame`/`session(_:didUpdate:)`
+    /// ci-dessous. ARKit n'expose pas de zoom optique (pas d'`AVCaptureDevice` sous-jacent, voir
+    /// `configureARTracking`), donc uniquement du zoom numérique : un recadrage centré, agrandi pour
+    /// remplir à nouveau le cadre. Réglé par un geste de pincement dans la vue hôte.
+    @Published var zoomFactor: CGFloat = 1.0
+    static let minZoomFactor: CGFloat = 1.0
+    static let maxZoomFactor: CGFloat = 5.0
 
     /// Position GPS demandée au début de chaque enregistrement — voir `LocationProvider` — utilisée
     /// uniquement pour situer la capture sur une carte dans les résultats.
@@ -100,6 +110,42 @@ final class CaptureManager: NSObject, ObservableObject {
             $0.imageResolution.width * $0.imageResolution.height
                 < $1.imageResolution.width * $1.imageResolution.height
         }
+    }
+
+    // MARK: Zoom numérique (voir `zoomFactor` ci-dessus)
+
+    /// Recadre `image` sur une région centrée `factor` fois plus petite, puis la remet à l'échelle
+    /// d'origine — un zoom numérique classique. Utilisé identiquement pour l'aperçu vidéo écrit sur
+    /// disque et pour les images du buffer d'analyse, afin que ce que l'utilisateur voit/enregistre
+    /// corresponde exactement à ce qui est analysé.
+    fileprivate static func applyZoom(to image: CIImage, factor: CGFloat) -> CIImage {
+        guard factor > 1.0 else { return image }
+        let extent = image.extent
+        let croppedWidth = extent.width / factor
+        let croppedHeight = extent.height / factor
+        let cropRect = CGRect(
+            x: extent.midX - croppedWidth / 2,
+            y: extent.midY - croppedHeight / 2,
+            width: croppedWidth,
+            height: croppedHeight
+        )
+        // `.cropped(to:)` change seulement l'extent, pas l'origine des coordonnées — on retranslate
+        // à (0,0) avant la mise à l'échelle pour que le résultat s'aligne avec le buffer de sortie.
+        return image
+            .cropped(to: cropRect)
+            .transformed(by: CGAffineTransform(translationX: -cropRect.minX, y: -cropRect.minY))
+            .transformed(by: CGAffineTransform(scaleX: factor, y: factor))
+    }
+
+    /// Multiplie la focale (fx/fy) par `factor`, en laissant le point principal (cx/cy) inchangé —
+    /// voir le commentaire dans `session(_:didUpdate:)` pour pourquoi c'est nécessaire dès que le
+    /// zoom numérique est actif.
+    fileprivate static func scaledIntrinsics(_ intrinsics: simd_float3x3, by factor: CGFloat) -> simd_float3x3 {
+        guard factor > 1.0 else { return intrinsics }
+        var result = intrinsics
+        result.columns.0.x *= Float(factor)
+        result.columns.1.y *= Float(factor)
+        return result
     }
 
     // MARK: Enregistrement
@@ -195,10 +241,17 @@ final class CaptureManager: NSObject, ObservableObject {
         guard let videoWriterInput, let pixelBufferAdaptor, videoWriterInput.isReadyForMoreMediaData else { return }
         let presentationTime = CMTime(seconds: frame.timestamp, preferredTimescale: 600)
 
-        let sourceImage = CIImage(cvPixelBuffer: frame.capturedImage)
+        let currentZoom = zoomFactor
+        var sourceImage = CIImage(cvPixelBuffer: frame.capturedImage)
+        if currentZoom > 1.0 {
+            sourceImage = Self.applyZoom(to: sourceImage, factor: currentZoom)
+        }
         let enhancement = LowLightEnhancer.enhanceIfDark(sourceImage, using: videoEnhanceContext)
 
-        guard enhancement.wasEnhanced,
+        // Un rendu via pool est nécessaire dès que l'image a été modifiée par rapport au buffer
+        // source (zoom et/ou rehaussement faible luminosité) — sinon on peut écrire directement
+        // le pixel buffer d'origine, plus rapide.
+        guard (currentZoom > 1.0 || enhancement.wasEnhanced),
               let pool = pixelBufferAdaptor.pixelBufferPool
         else {
             pixelBufferAdaptor.append(frame.capturedImage, withPresentationTime: presentationTime)
@@ -298,12 +351,21 @@ extension CaptureManager: ARSessionDelegate {
         guard frame.timestamp - lastCaptureTimestamp >= captureIntervalSeconds else { return }
         lastCaptureTimestamp = frame.timestamp
 
-        guard let cgImage = CGImage.from(pixelBuffer: frame.capturedImage) else { return }
+        let currentZoom = zoomFactor
+        guard let cgImage = CGImage.from(pixelBuffer: frame.capturedImage, zoomFactor: currentZoom) else { return }
+        // La focale (fx/fy) doit être mise à l'échelle du même facteur que l'image : un objet
+        // occupe `currentZoom` fois plus de pixels à l'écran après le recadrage numérique, donc la
+        // focale en pixels doit croître d'autant pour que les calculs d'angle/distance en aval
+        // (TrajectoryCalculator, DistanceEstimator) restent corrects — sans ça, zoomer fausserait
+        // silencieusement la distance et la vitesse estimées d'un facteur `currentZoom`. Le point
+        // principal (cx/cy) ne change pas : le recadrage reste centré sur l'image de sortie, dont
+        // les dimensions sont inchangées.
+        let scaledIntrinsics = Self.scaledIntrinsics(frame.camera.intrinsics, by: currentZoom)
         frameBuffer.append(
             CapturedFrame(
                 image: cgImage,
                 cameraTransform: frame.camera.transform,
-                intrinsics: frame.camera.intrinsics,
+                intrinsics: scaledIntrinsics,
                 timestamp: frame.timestamp
             )
         )
@@ -325,8 +387,11 @@ extension CGImage {
     /// quelle que soit l'orientation de l'UI, d'où l'image de travers sans cette correction), et
     /// rehaussée automatiquement si la scène est sombre (voir `LowLightEnhancer`) — sert à la fois
     /// au buffer d'analyse et de base aux photos (voir `PhotoComposer`).
-    static func from(pixelBuffer: CVPixelBuffer) -> CGImage? {
-        let ciImage = CIImage(cvPixelBuffer: pixelBuffer).oriented(.right)
+    static func from(pixelBuffer: CVPixelBuffer, zoomFactor: CGFloat = 1.0) -> CGImage? {
+        var ciImage = CIImage(cvPixelBuffer: pixelBuffer).oriented(.right)
+        if zoomFactor > 1.0 {
+            ciImage = CaptureManager.applyZoom(to: ciImage, factor: zoomFactor)
+        }
         let enhanced = LowLightEnhancer.enhanceIfDark(ciImage, using: conversionContext).image
         return conversionContext.createCGImage(enhanced, from: enhanced.extent)
     }

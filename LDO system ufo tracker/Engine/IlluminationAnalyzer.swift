@@ -19,7 +19,7 @@ final class IlluminationAnalyzer {
 
     func analyzeIllumination(luminousRegionsOverTime: [(timestamp: TimeInterval, region: LuminousRegion)]) -> IlluminationResult {
         guard !luminousRegionsOverTime.isEmpty else {
-            return IlluminationResult(pattern: "Indéterminé (zone lumineuse non isolée)", colorGuess: "Indéterminé", estimatedKelvin: nil, blinkFrequencyHz: nil)
+            return IlluminationResult(pattern: "Indéterminé (zone lumineuse non isolée)", colorGuess: "Indéterminé", estimatedKelvin: nil, blinkFrequencyHz: nil, isRegularBlink: false)
         }
 
         // 1. Pattern : continu vs variable, à partir de la luminosité moyenne dans le temps.
@@ -29,39 +29,70 @@ final class IlluminationAnalyzer {
         let coefficientOfVariation = mean > 0 ? sqrt(variance) / mean : 0
         let isVariable = coefficientOfVariation > variabilityThreshold
 
-        // 2. Si variable, estimation grossière de la fréquence de clignotement par comptage de
-        //    passages sous/au-dessus de la moyenne (méthode des passages par zéro).
-        let blinkFrequency = isVariable ? estimateBlinkFrequency(luminousRegionsOverTime) : nil
+        // 2. Si variable, estimation de la fréquence de clignotement ET de sa régularité, par
+        //    comptage des passages sous/au-dessus de la moyenne (méthode des passages par zéro) —
+        //    voir `blinkStatistics` : distingue un clignotement quasi périodique (feu stroboscopique
+        //    d'aéronef/drone, intervalles réguliers) d'un scintillement erratique (intervalles très
+        //    irréguliers), utilisé par `VerdictCalculator` pour les règles spécifiques au Mode Nuit.
+        let blinkStats = isVariable ? blinkStatistics(luminousRegionsOverTime) : (frequencyHz: nil, isRegular: false)
 
         // 3. Température de couleur approximative (formule de McCamy) à partir de la couleur RVB
         //    moyenne de la zone lumineuse, moyennée sur toutes les images disponibles.
         let avgColor = averageColor(luminousRegionsOverTime.map { $0.region.averageColor })
         let kelvin = approximateColorTemperature(r: avgColor.r, g: avgColor.g, b: avgColor.b)
 
-        let pattern = isVariable
-            ? "Variable / clignotante" + (blinkFrequency.map { String(format: " (≈ %.1f Hz)", $0) } ?? "")
-            : "Continue"
+        let pattern: String
+        if isVariable {
+            let frequencySuffix = blinkStats.frequencyHz.map { String(format: " (≈ %.1f Hz)", $0) } ?? ""
+            pattern = blinkStats.isRegular
+                ? "Clignotante régulière" + frequencySuffix
+                : "Variable / scintillante irrégulière" + frequencySuffix
+        } else {
+            pattern = "Continue"
+        }
 
         let colorGuess = interpretColor(kelvin: kelvin)
 
-        return IlluminationResult(pattern: pattern, colorGuess: colorGuess, estimatedKelvin: kelvin, blinkFrequencyHz: blinkFrequency)
+        return IlluminationResult(
+            pattern: pattern,
+            colorGuess: colorGuess,
+            estimatedKelvin: kelvin,
+            blinkFrequencyHz: blinkStats.frequencyHz,
+            isRegularBlink: blinkStats.isRegular
+        )
     }
 
     // MARK: - Détail
 
-    private func estimateBlinkFrequency(_ samples: [(timestamp: TimeInterval, region: LuminousRegion)]) -> Double? {
-        guard samples.count >= 4 else { return nil }
+    /// Fréquence de clignotement (méthode des passages par zéro) + régularité : coefficient de
+    /// variation des intervalles entre passages successifs. Un feu stroboscopique d'aéronef/drone
+    /// clignote à intervalles quasi identiques (CV faible) ; un scintillement erratique produit des
+    /// intervalles très inégaux (CV élevé). Seuil `0.35` choisi empiriquement — pas une mesure
+    /// physique exacte, juste un ordre de grandeur suffisant pour distinguer les deux cas.
+    private func blinkStatistics(_ samples: [(timestamp: TimeInterval, region: LuminousRegion)]) -> (frequencyHz: Double?, isRegular: Bool) {
+        guard samples.count >= 4 else { return (nil, false) }
         let mean = samples.map { $0.region.averageBrightness }.reduce(0, +) / Double(samples.count)
-        var crossings = 0
+        var crossingTimestamps: [TimeInterval] = []
         for i in 1..<samples.count {
             let previousAbove = samples[i-1].region.averageBrightness > mean
             let currentAbove = samples[i].region.averageBrightness > mean
-            if previousAbove != currentAbove { crossings += 1 }
+            if previousAbove != currentAbove { crossingTimestamps.append(samples[i].timestamp) }
         }
         let duration = samples.last!.timestamp - samples.first!.timestamp
-        guard duration > 0 else { return nil }
+        guard duration > 0, crossingTimestamps.count >= 2 else { return (nil, false) }
         // 2 passages par zéro = 1 cycle complet.
-        return (Double(crossings) / 2.0) / duration
+        let frequency = (Double(crossingTimestamps.count) / 2.0) / duration
+
+        var intervals: [TimeInterval] = []
+        for i in 1..<crossingTimestamps.count {
+            intervals.append(crossingTimestamps[i] - crossingTimestamps[i - 1])
+        }
+        guard intervals.count >= 2 else { return (frequency, false) }
+        let intervalMean = intervals.reduce(0, +) / Double(intervals.count)
+        guard intervalMean > 0 else { return (frequency, false) }
+        let intervalVariance = intervals.reduce(0) { $0 + pow($1 - intervalMean, 2) } / Double(intervals.count)
+        let intervalCV = sqrt(intervalVariance) / intervalMean
+        return (frequency, intervalCV < 0.35)
     }
 
     private func averageColor(_ colors: [(r: Double, g: Double, b: Double)]) -> (r: Double, g: Double, b: Double) {
@@ -108,4 +139,7 @@ struct IlluminationResult {
     let colorGuess: String
     let estimatedKelvin: Double?
     let blinkFrequencyHz: Double?
+    /// `true` si un clignotement détecté est quasi périodique (feu stroboscopique connu) plutôt
+    /// qu'un scintillement erratique — voir `IlluminationAnalyzer.blinkStatistics`.
+    let isRegularBlink: Bool
 }

@@ -145,7 +145,7 @@ final class AnalysisEngine {
 
         report(1, "Classification de la forme…")
         // Étape 3 : classification de forme heuristique + isolement de la zone lumineuse (voir ShapeClassifier.swift).
-        let shape = shapeClassifier.classifyShape(detections: detections, frames: frames)
+        let shape = shapeClassifier.classifyShape(detections: detections, frames: frames, mode: mode)
         session.shapeDescription = shape.label
         session.shapeConfidence = shape.confidence
         session.known3DModelURL = shapeClassifier.buildApproximate3DSilhouette(luminousRegion: shape.luminousRegion)
@@ -225,7 +225,7 @@ final class AnalysisEngine {
         // Calculé AVANT le rendu des incrustations ci-dessous : le logo LDO n'est dessiné que si le
         // verdict penche vers "OVNI" (voir OverlayRenderer.draw), donc verdictConfidencePercent doit
         // déjà être renseigné à ce moment-là.
-        let verdict = verdictCalculator.computeVerdict(session: session, shape: shape)
+        let verdict = verdictCalculator.computeVerdict(session: session, shape: shape, mode: mode)
         session.verdictLabel = verdict.label
         session.verdictConfidencePercent = verdict.percent
         session.verdictFactors = verdict.factors

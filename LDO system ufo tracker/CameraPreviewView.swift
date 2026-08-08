@@ -17,6 +17,13 @@ import SceneKit
 /// pour l'aperçu caméra.
 struct CameraPreviewView: UIViewRepresentable {
     let session: ARSession
+    /// Zoom numérique appliqué à l'aperçu — doit rester visuellement identique au recadrage
+    /// appliqué par `CaptureManager` à la vidéo/aux images d'analyse (voir `CaptureManager.zoomFactor`),
+    /// sans quoi l'utilisateur cadrerait sur autre chose que ce qui est réellement enregistré.
+    /// ARKit n'expose aucun zoom natif (pas d'`AVCaptureDevice` sous-jacent) : on zoome donc la vue
+    /// elle-même, ce qui reproduit visuellement le même recadrage centré + agrandissement que le
+    /// traitement pixel appliqué à l'enregistrement.
+    var zoomFactor: CGFloat
 
     func makeUIView(context: Context) -> ARSCNView {
         let view = ARSCNView()
@@ -32,6 +39,6 @@ struct CameraPreviewView: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: ARSCNView, context: Context) {
-        // Rien à mettre à jour dynamiquement : CaptureManager pilote la session directement.
+        uiView.transform = CGAffineTransform(scaleX: zoomFactor, y: zoomFactor)
     }
 }

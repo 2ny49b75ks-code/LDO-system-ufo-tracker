@@ -196,10 +196,13 @@ final class MotionDetector {
         guard !candidates.isEmpty else { return nil }
 
         if let previousCenter {
-            // Rayon de recherche généreux (10% de la diagonale normalisée) : suffisant pour suivre un
-            // déplacement réel image à image, mais assez serré pour ignorer un nouveau blob de bruit
-            // apparu ailleurs dans le ciel.
-            let maxTrackingDistance: CGFloat = 0.1
+            // Rayon de recherche généreux (20% de la diagonale normalisée — doublé à la demande
+            // explicite de Jean-David pour mieux capter l'objet ciblé au toucher, voir aussi
+            // `detectDarkObjectOnBrightSky` ci-dessous) : sert à la fois de rayon de recherche autour
+            // du point touché à l'écran (premier appel, `previousCenter = hintPoint`) et de rayon de
+            // continuité de suivi image à image ensuite — assez large pour suivre un déplacement réel,
+            // assez serré pour ignorer un nouveau blob de bruit apparu ailleurs dans le ciel.
+            let maxTrackingDistance: CGFloat = 0.2
             let nearby = candidates.filter { candidate in
                 let center = CGPoint(x: candidate.midX, y: candidate.midY)
                 let dx = center.x - previousCenter.x
@@ -269,7 +272,7 @@ final class MotionDetector {
         // Même continuité de suivi que `brightestBoundingBox` (voir sa documentation) — évite qu'un
         // scintillement de contraste fasse sauter la détection d'une silhouette à une autre.
         if let previousCenter {
-            let maxTrackingDistance: CGFloat = 0.1
+            let maxTrackingDistance: CGFloat = 0.2
             let nearby = candidates.filter { candidate in
                 let center = CGPoint(x: candidate.midX, y: candidate.midY)
                 let dx = center.x - previousCenter.x

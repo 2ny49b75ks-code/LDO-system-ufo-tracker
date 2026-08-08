@@ -20,7 +20,18 @@ struct ResultsView: View {
     var body: some View {
         NavigationView {
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
+                resultsContent
+            }
+            .navigationTitle("Analyse LDO")
+        }
+    }
+
+    /// Contenu complet des résultats (photos, mesures, cartes, verdict) — factorisé hors de `body`
+    /// pour être réutilisé tel quel par la capture d'écran complète sauvegardée dans Photos à la
+    /// suite des 3 photos recadrées (voir `ResultsScreenshotRenderer`), demande explicite de
+    /// Jean-David : « fais capture d'écran et sauvegarde dans la bibliothèque toute l'analyse ».
+    var resultsContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
 
                     if !session.photosWithOverlays.isEmpty {
                         let labels = ["Plan large", "Zoom maximum sur la cible", "Zoom ×2"]
@@ -149,9 +160,6 @@ struct ResultsView: View {
                     .padding(.top, 4)
                 }
                 .padding()
-            }
-            .navigationTitle("Analyse LDO")
-        }
     }
 
     private func distanceText() -> String {

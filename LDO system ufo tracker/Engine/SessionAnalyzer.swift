@@ -45,6 +45,28 @@ final class SessionAnalyzer: ObservableObject {
                 }
             }
 
+            // Capture d'écran de l'écran de résultats complet (mesures, cartes, verdict — voir
+            // ResultsScreenshotRenderer), ajoutée À LA SUITE des 3 photos recadrées avant la
+            // sauvegarde dans Photos — demande explicite de Jean-David. Le rendu SwiftUI/MapKit doit
+            // se faire sur le fil principal (contrairement au reste de ce pipeline, qui tourne en
+            // arrière-plan) : on y bascule le temps du rendu via un sémaphore, même pont utilisé
+            // ailleurs dans ce pipeline (SoundClassifier, sauvegarde Photos) pour ponter une API
+            // asynchrone vers ce contexte synchrone.
+            let screenshotSemaphore = DispatchSemaphore(value: 0)
+            var resultsScreenshot: CGImage?
+            DispatchQueue.main.async {
+                Task { @MainActor in
+                    resultsScreenshot = await ResultsScreenshotRenderer.render(session: result)
+                    screenshotSemaphore.signal()
+                }
+            }
+            _ = screenshotSemaphore.wait(timeout: .now() + 8)
+
+            var photosToSave = result.photosWithOverlays
+            if let resultsScreenshot {
+                photosToSave.append(resultsScreenshot)
+            }
+
             // Attend explicitement la confirmation de sauvegarde (au lieu d'un simple « fire and
             // forget ») pour pouvoir prévenir l'utilisateur si ça échoue — une permission Photos
             // refusée échouait auparavant en silence (seul un log #if DEBUG, invisible en TestFlight).
@@ -53,7 +75,7 @@ final class SessionAnalyzer: ObservableObject {
             // PhotoLibrarySaver (première demande de permission Photos lente à répondre, par ex.),
             // on veut que ça compte comme un échec visible plutôt qu'un faux succès silencieux.
             var photosSaved = false
-            PhotoLibrarySaver.savePhotos(result.photosWithOverlays) { success in
+            PhotoLibrarySaver.savePhotos(photosToSave) { success in
                 photosSaved = success
                 photoSaveSemaphore.signal()
             }

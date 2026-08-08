@@ -27,6 +27,10 @@ struct ClipTrimView: View {
     @State private var clipStart: Double = 0
     @State private var isLoadingDuration = true
     @State private var mode: CaptureMode
+    /// Images miniatures réparties sur toute la durée de l'enregistrement — pour visualiser les
+    /// parties de la vidéo disponibles avant de choisir l'extrait à analyser (demande explicite de
+    /// Jean-David, Mode LIVE). Générées une fois la durée connue, voir `generateFilmstrip`.
+    @State private var filmstripThumbnails: [UIImage] = []
     /// Point touché par l'utilisateur dans le repère SwiftUI (origine haut-gauche) du lecteur vidéo —
     /// converti au repère Vision (origine bas-gauche) seulement au moment de `onConfirm`.
     @State private var tappedPoint: CGPoint?
@@ -135,6 +139,19 @@ struct ClipTrimView: View {
                     .tint(.green)
             } else if duration > clipDuration {
                 VStack(spacing: 8) {
+                    if !filmstripThumbnails.isEmpty {
+                        FilmstripView(
+                            thumbnails: filmstripThumbnails,
+                            duration: duration,
+                            clipStart: clipStart,
+                            clipDuration: clipDuration
+                        ) { newStart in
+                            clipStart = newStart
+                            seekPreview()
+                        }
+                        .frame(height: 56)
+                        .padding(.horizontal, 30)
+                    }
                     Slider(
                         value: Binding(
                             get: { clipStart },
@@ -182,11 +199,87 @@ struct ClipTrimView: View {
             let seconds = (try? await asset.load(.duration).seconds) ?? 0
             duration = seconds.isFinite ? seconds : 0
             isLoadingDuration = false
+            if duration > 0 {
+                filmstripThumbnails = await Self.generateFilmstrip(videoURL: videoURL, duration: duration)
+            }
         }
     }
 
     private func seekPreview() {
         player.pause()
         player.seek(to: CMTime(seconds: clipStart, preferredTimescale: 600))
+    }
+
+    /// Génère des miniatures réparties uniformément sur toute la vidéo, pour donner un aperçu visuel
+    /// de l'enregistrement complet avant de choisir les 2 secondes à analyser.
+    private static func generateFilmstrip(videoURL: URL, duration: Double, count: Int = 10) async -> [UIImage] {
+        let asset = AVURLAsset(url: videoURL)
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: 160, height: 160)
+
+        let times = (0..<count).map { i in
+            CMTime(seconds: duration * Double(i) / Double(max(count - 1, 1)), preferredTimescale: 600)
+        }
+
+        var images: [UIImage] = []
+        do {
+            for try await result in generator.images(for: times) {
+                if case let .success(_, cgImage, _) = result {
+                    images.append(UIImage(cgImage: cgImage))
+                }
+            }
+        } catch {
+            // Dégradation silencieuse : sans miniatures, le curseur de sélection ci-dessus reste
+            // pleinement fonctionnel, seul l'aperçu visuel supplémentaire est absent.
+        }
+        return images
+    }
+}
+
+/// Bandeau de miniatures représentant toute la vidéo enregistrée, avec un cadre vert indiquant
+/// l'extrait de 2 secondes actuellement sélectionné — permet de visualiser en un coup d'œil les
+/// parties de la vidéo disponibles avant de choisir laquelle faire analyser. Touche/glisse
+/// directement sur le bandeau pour déplacer la sélection, en plus du curseur ci-dessous.
+private struct FilmstripView: View {
+    let thumbnails: [UIImage]
+    let duration: Double
+    let clipStart: Double
+    let clipDuration: Double
+    let onScrub: (Double) -> Void
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                HStack(spacing: 1) {
+                    ForEach(Array(thumbnails.enumerated()), id: \.offset) { _, thumbnail in
+                        Image(uiImage: thumbnail)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .frame(width: geo.size.width / CGFloat(thumbnails.count))
+                            .clipped()
+                    }
+                }
+                .cornerRadius(8)
+
+                let selectionWidth = min(CGFloat(clipDuration / duration) * geo.size.width, geo.size.width)
+                let selectionX = min(CGFloat(clipStart / duration) * geo.size.width, geo.size.width - selectionWidth)
+                Rectangle()
+                    .stroke(Color.green, lineWidth: 3)
+                    .background(Color.green.opacity(0.15))
+                    .frame(width: max(selectionWidth, 4), height: geo.size.height)
+                    .offset(x: selectionX)
+                    .allowsHitTesting(false)
+            }
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        let fraction = min(max(value.location.x / geo.size.width, 0), 1)
+                        let newStart = min(max(fraction * duration - clipDuration / 2, 0), duration - clipDuration)
+                        onScrub(newStart)
+                    }
+            )
+        }
     }
 }
