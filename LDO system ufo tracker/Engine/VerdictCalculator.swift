@@ -98,7 +98,13 @@ final class VerdictCalculator {
         //    Facteur pondéré demandé explicitement par Jean-David comme point important de
         //    l'analyse : un contour net et rond est cohérent avec un point lumineux ponctuel connu
         //    (feu de navigation, étoile, reflet) ; un contour amorphe/irrégulier est atypique.
-        if let irregularity = shape.luminousRegion?.contourIrregularity {
+        //    BUG corrigé (2026-08-08) : ce facteur ne s'applique qu'en Mode Nuit — `isolateLuminousRegion`
+        //    isole les pixels les plus CLAIRS, ce qui n'a de sens que pour un point lumineux sur ciel
+        //    sombre. En Mode Jour (silhouette sombre sur ciel clair), cette même isolation "lumineuse"
+        //    mesure autre chose que l'objet réel (le ciel autour, pas l'avion) — ça avait fait
+        //    remonter à tort un avion évident vers 61% d'OVNI via un indice d'irrégularité de 1.00
+        //    n'ayant aucun rapport avec la forme de l'avion lui-même.
+        if mode == .night, let irregularity = shape.luminousRegion?.contourIrregularity {
             if irregularity > 0.5 {
                 score += 20
                 factors.append("Contour de la source lumineuse irrégulier/amorphe (indice : \(String(format: "%.2f", irregularity))) — atypique d'un point lumineux net et rond")

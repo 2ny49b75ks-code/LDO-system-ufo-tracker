@@ -45,12 +45,18 @@ final class ShapeClassifier {
         //    change de taille progressivement ; un objet à distance constante a une taille stable).
         let sizeVariability = sizeSignature(detections)
 
+        // 2bis. Signal de silhouette : rapport largeur/hauteur moyen de la boîte de détection — un
+        //    avion, même lointain et minuscule à l'écran, a une envergure d'ailes qui le rend
+        //    nettement plus large que haut ; un point lumineux ou un oiseau replié n'a pas cette
+        //    asymétrie. Voir `heuristicClassify`.
+        let aspectRatio = aspectRatioSignature(detections)
+
         // 3. Isolement de la zone lumineuse sur l'image médiane (la plus représentative).
         let midDetection = detections[safe: detections.count / 2]
         let luminous = midDetection.flatMap { isolateLuminousRegion(for: $0, frames: frames) }
 
         // 4. Classification heuristique combinant ces signaux.
-        let (label, confidence) = heuristicClassify(motion: motion, sizeVariability: sizeVariability, mode: mode)
+        let (label, confidence) = heuristicClassify(motion: motion, sizeVariability: sizeVariability, aspectRatio: aspectRatio, mode: mode)
 
         return ShapeResult(label: label, confidence: confidence, luminousRegion: luminous)
     }
@@ -186,7 +192,17 @@ final class ShapeClassifier {
         return Double(sqrt(variance) / mean) // coefficient de variation : 0 = taille parfaitement stable
     }
 
-    private func heuristicClassify(motion: MotionSignature, sizeVariability: Double, mode: CaptureMode) -> (String, Double) {
+    /// Rapport largeur/hauteur moyen de la boîte de détection sur toute la séquence.
+    private func aspectRatioSignature(_ detections: [Detection]) -> Double {
+        let ratios = detections.compactMap { d -> Double? in
+            guard d.boundingBox.height > 0 else { return nil }
+            return Double(d.boundingBox.width / d.boundingBox.height)
+        }
+        guard !ratios.isEmpty else { return 1 }
+        return ratios.reduce(0, +) / Double(ratios.count)
+    }
+
+    private func heuristicClassify(motion: MotionSignature, sizeVariability: Double, aspectRatio: Double, mode: CaptureMode) -> (String, Double) {
         // En Mode Nuit, la détection ne porte que sur une source lumineuse isolée (voir
         // MotionDetector.detectByLuminosity) — un oiseau ou un insecte en vol de nuit ne produit pas
         // de lumière propre, donc ces deux explications sont exclues d'office (règle explicite de
@@ -207,6 +223,17 @@ final class ShapeClassifier {
         // Déplacement très linéaire, taille stable => avion ou satellite à distance constante.
         if motion.oscillationRate < 0.1 && sizeVariability < 0.15 {
             return ("Probable avion ou satellite (trajectoire stable)", 0.4)
+        }
+        // Silhouette nettement plus large que haute (envergure des ailes) + mouvement peu oscillant
+        // => avion, même si la taille apparente varie plus que le seuil strict ci-dessus (normal en
+        // filmant à main levée en zoomant sur un avion lointain — l'objet reste minuscule à l'écran,
+        // sujet à la mise au point/l'exposition qui fait varier légèrement sa taille apparente d'une
+        // image à l'autre sans que ce soit un vrai changement de distance). Signal indépendant de la
+        // stabilité de taille : un avion garde son envergure caractéristique quelle que soit la
+        // fluctuation de taille détectée. Ajouté 2026-08-08 suite à un avion réel non reconnu (tombait
+        // dans "non identifiée" malgré une trajectoire quasi parfaitement rectiligne, R² 0.97).
+        if motion.oscillationRate < 0.15 && aspectRatio >= 1.4 {
+            return ("Probable avion ou satellite (silhouette large, envergure d'ailes)", 0.45)
         }
         // Aucun signal net dominant => on ne force pas une conclusion.
         return ("Forme non identifiée avec certitude", 0.15)

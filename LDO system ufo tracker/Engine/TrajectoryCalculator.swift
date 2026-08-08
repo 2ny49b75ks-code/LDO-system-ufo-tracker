@@ -84,7 +84,16 @@ final class TrajectoryCalculator {
         // 8. Motif en zigzag gauche-droite : un avion, un drone ou un satellite suit une trajectoire
         //    linéaire ou une courbe continue dans UNE seule direction ; des changements de sens
         //    répétés (gauche-droite-gauche...) ne correspondent à aucun comportement de vol connu.
-        let zigzag = detectZigzagPattern(points2D)
+        //    BUG corrigé (2026-08-08, signalé par Jean-David sur un avion réel filmé en zoomant à la
+        //    main) : ceci tournait auparavant sur `points2D`, la position brute À L'ÉCRAN — non
+        //    corrigée du mouvement de caméra, contrairement au test de linéarité ci-dessus. Un simple
+        //    tremblement de main en suivant l'avion au zoom suffisait à produire de faux "changements
+        //    de direction" (zigzag=vrai) alors que la trajectoire réelle dans le ciel était une ligne
+        //    quasi parfaite (R² 0.97) — les deux résultats se contredisaient dans l'écran de résultats.
+        //    Utilise maintenant la même projection angulaire réelle (corrigée de la pose caméra) que
+        //    la linéarité, sur les échantillons BRUTS (non lissés, comme les virages/vitesse ci-dessus)
+        //    pour ne pas non plus écraser un vrai zigzag brusque.
+        let zigzag = detectZigzagPattern(angularScreenProjection(angularSamples))
 
         return TrajectoryResult(
             points2D: points2D,
@@ -267,6 +276,19 @@ final class TrajectoryCalculator {
 
     private func center(_ box: CGRect) -> CGPoint {
         CGPoint(x: box.midX, y: box.midY)
+    }
+
+    /// Projette chaque direction 3D réelle (corrigée de la pose caméra) en un point 2D
+    /// (azimut, élévation, en radians) — sert d'équivalent à `points2D` mais dans le repère du ciel
+    /// plutôt qu'à l'écran, pour que `detectZigzagPattern` ne confonde plus un tremblement de main
+    /// avec un vrai changement de direction de l'objet (voir le commentaire au point d'appel).
+    private func angularScreenProjection(_ samples: [AngularSample]) -> [CGPoint] {
+        samples.map { sample in
+            let d = sample.direction
+            let azimuth = atan2(d.x, d.z)
+            let elevation = asin(max(-1, min(1, d.y)))
+            return CGPoint(x: azimuth, y: elevation)
+        }
     }
 
     // MARK: - 8. Motif en zigzag

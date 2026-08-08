@@ -58,20 +58,52 @@ final class SoundClassifier {
             break
         }
 
-        do {
-            let analyzer = try SNAudioFileAnalyzer(url: videoURL)
-            let request = try SNClassifySoundRequest(classifierIdentifier: .version1)
-
-            let observer = ClassificationObserver { [weak self] results in
-                guard let self else { return }
-                let best = self.bestMatch(among: results)
-                completion(best)
+        // `SNAudioFileAnalyzer` s'appuie sur `AVAudioFile`, qui n'ouvre fiablement que des fichiers
+        // purement audio (WAV, CAF, M4A...) — pas un conteneur vidéo .mov (HEVC + AAC), même si la
+        // piste audio existe bel et bien dedans. Lui passer directement `videoURL` échouait
+        // silencieusement avec "Couldn't open audio file" à chaque analyse (bug signalé par
+        // Jean-David, confirmé par le message d'erreur exact). On extrait donc d'abord la piste
+        // audio seule dans un fichier temporaire .m4a avant de l'analyser.
+        extractAudioTrack(from: videoURL) { [weak self] audioURL in
+            guard let self else { return }
+            guard let audioURL else {
+                completion(SoundResult(label: "Analyse audio impossible (extraction de la piste audio échouée)", matchedCategory: nil, confidence: 0))
+                return
             }
+            do {
+                let analyzer = try SNAudioFileAnalyzer(url: audioURL)
+                let request = try SNClassifySoundRequest(classifierIdentifier: .version1)
 
-            try analyzer.add(request, withObserver: observer)
-            analyzer.analyze()
-        } catch {
-            completion(SoundResult(label: "Analyse audio impossible (\(error.localizedDescription))", matchedCategory: nil, confidence: 0))
+                let observer = ClassificationObserver { results in
+                    let best = self.bestMatch(among: results)
+                    try? FileManager.default.removeItem(at: audioURL)
+                    completion(best)
+                }
+
+                try analyzer.add(request, withObserver: observer)
+                analyzer.analyze()
+            } catch {
+                try? FileManager.default.removeItem(at: audioURL)
+                completion(SoundResult(label: "Analyse audio impossible (\(error.localizedDescription))", matchedCategory: nil, confidence: 0))
+            }
+        }
+    }
+
+    /// Exporte uniquement la piste audio de `videoURL` vers un fichier .m4a temporaire, seul format
+    /// fiable pour `SNAudioFileAnalyzer` (voir commentaire ci-dessus).
+    private func extractAudioTrack(from videoURL: URL, completion: @escaping (URL?) -> Void) {
+        let asset = AVURLAsset(url: videoURL)
+        guard let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A) else {
+            completion(nil)
+            return
+        }
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("m4a")
+        exportSession.outputURL = outputURL
+        exportSession.outputFileType = .m4a
+        exportSession.exportAsynchronously {
+            completion(exportSession.status == .completed ? outputURL : nil)
         }
     }
 
