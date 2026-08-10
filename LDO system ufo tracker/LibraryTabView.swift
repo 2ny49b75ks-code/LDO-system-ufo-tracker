@@ -7,6 +7,7 @@
 import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
+import AVFoundation
 
 /// Onglet Bibliothèque : importe une vidéo déjà présente dans la photothèque (bouton « + ») et
 /// l'analyse avec le même pipeline que l'onglet LIVE. `PhotosPicker` ne demande aucune permission
@@ -100,12 +101,51 @@ struct LibraryTabView: View {
             }
             // Pas de mode connu pour une vidéo importée (jamais filmée par LDO) — Nuit par défaut,
             // l'utilisateur peut le changer dans ClipTrimView avant de lancer l'analyse. Pas de
-            // position GPS non plus : aucune métadonnée de localisation lue depuis l'import (même
-            // limitation que la pose ARKit, voir AnalysisTarget).
-            analysisTarget = AnalysisTarget(videoURL: movie.url, poses: [], initialMode: .night, captureLocation: nil)
+            // pose ARKit non plus (même limitation, voir AnalysisTarget). La position GPS, elle,
+            // EST récupérable : une vidéo filmée avec l'app Appareil photo (Services de localisation
+            // actifs) embarque sa propre position dans ses métadonnées QuickTime — on la lit
+            // directement du fichier plutôt que d'utiliser la position ACTUELLE du téléphone, qui
+            // n'aurait aucun rapport avec l'endroit où la vidéo a réellement été filmée (2026-08-09,
+            // demande de Jean-David : toujours donner la position de l'iPhone qui a pris la capture —
+            // ici, l'iPhone qui a filmé la vidéo importée, lue depuis ses propres métadonnées).
+            let location = await Self.extractEmbeddedLocation(from: movie.url)
+            analysisTarget = AnalysisTarget(videoURL: movie.url, poses: [], initialMode: .night, captureLocation: location)
         } catch {
             importErrorMessage = "Échec de l'importation : \(error.localizedDescription)"
         }
+    }
+
+    /// Lit la position GPS embarquée dans les métadonnées QuickTime d'une vidéo (présente si les
+    /// Services de localisation étaient actifs au moment du tournage — cas standard pour une vidéo
+    /// filmée avec l'app Appareil photo). `nil` si absente (métadonnées supprimées lors d'un
+    /// transfert, localisation désactivée au tournage, etc.) — `ResultsView` affiche alors le
+    /// message « position GPS non disponible » existant plutôt qu'une position inventée.
+    private static func extractEmbeddedLocation(from url: URL) async -> CLCoordinate? {
+        let asset = AVURLAsset(url: url)
+        guard let metadataItems = try? await asset.load(.metadata) else { return nil }
+        for item in metadataItems {
+            guard item.commonKey == .commonKeyLocation || item.identifier == .quickTimeMetadataLocationISO6709,
+                  let stringValue = try? await item.load(.stringValue)
+            else { continue }
+            if let coordinate = parseISO6709(stringValue) {
+                return coordinate
+            }
+        }
+        return nil
+    }
+
+    /// Coordonnées ISO 6709 (format standard des métadonnées de localisation QuickTime/EXIF), ex.
+    /// `"+45.5017-073.5673+050.000/"` — latitude et longitude signées à largeur variable, altitude
+    /// optionnelle. Extraction par expression régulière plutôt qu'un découpage à position fixe : la
+    /// largeur des champs varie selon le nombre de décimales.
+    private static func parseISO6709(_ string: String) -> CLCoordinate? {
+        guard let regex = try? NSRegularExpression(pattern: #"([+-]\d+(?:\.\d+)?)([+-]\d+(?:\.\d+)?)"#),
+              let match = regex.firstMatch(in: string, range: NSRange(string.startIndex..., in: string)),
+              let latRange = Range(match.range(at: 1), in: string),
+              let lonRange = Range(match.range(at: 2), in: string),
+              let lat = Double(string[latRange]), let lon = Double(string[lonRange])
+        else { return nil }
+        return CLCoordinate(lat: lat, lon: lon)
     }
 }
 
