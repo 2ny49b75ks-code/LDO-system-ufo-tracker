@@ -15,6 +15,7 @@ import AVFoundation
 /// - la trajectoire de l'objet, en rouge
 /// - la date et l'heure du signalement, en rouge, en bas de l'image
 /// - la vitesse maximale obtenue, en rouge, en bas de l'image
+/// - le logo LDO en haut à droite, TOUJOURS (filigrane de marque, voir `draw`)
 /// - le logo LDO (soucoupe verte fluo) en bas à droite, UNIQUEMENT si le verdict penche vers "OVNI"
 enum OverlayRenderer {
 
@@ -70,9 +71,25 @@ enum OverlayRenderer {
         let speedText = session.maxSpeedKmh > 0 ? String(format: "Vitesse max. : %.0f km/h", session.maxSpeedKmh) : "Vitesse : non calculable"
         drawBottomText(context: context, lines: [dateText, speedText], width: width, height: height)
 
+        // Logo LDO en haut à droite, TOUJOURS visible — image de marque sur les 3 photos et la
+        // vidéo exportée, demande explicite de Jean-David (2026-08-09). Distinct du logo
+        // conditionnel ci-dessous (en bas à droite, lui uniquement si le verdict penche vers un
+        // phénomène non identifié) : celui-ci est un simple filigrane de marque, pas un indicateur.
+        let topRightRadius = CGFloat(width) * 0.035
+        let topRightCenter = CGPoint(
+            x: CGFloat(width) - topRightRadius - CGFloat(width) * 0.03,
+            y: CGFloat(height) - topRightRadius - CGFloat(height) * 0.03
+        )
+        drawLogoPlaceholder(context: context, width: width, height: height, center: topRightCenter)
+
         // Logo LDO en bas à droite, seulement si le verdict penche vers un phénomène non identifié.
         if session.verdictConfidencePercent >= 60 {
-            drawLogoPlaceholder(context: context, width: width, height: height)
+            let bottomRightRadius = CGFloat(width) * 0.035
+            let bottomRightCenter = CGPoint(
+                x: CGFloat(width) - bottomRightRadius - CGFloat(width) * 0.03,
+                y: bottomRightRadius + CGFloat(height) * 0.03
+            )
+            drawLogoPlaceholder(context: context, width: width, height: height, center: bottomRightCenter)
         }
 
         return context.makeImage() ?? image
@@ -219,10 +236,10 @@ enum OverlayRenderer {
     }
 
     /// Version simplifiée du logo (cercle + "LDO" vert fluo) directement en CoreGraphics, pour ne
-    /// pas dépendre du chargement d'un asset image dans ce module utilitaire.
-    private static func drawLogoPlaceholder(context: CGContext, width: Int, height: Int) {
+    /// pas dépendre du chargement d'un asset image dans ce module utilitaire. `center` en repère
+    /// CoreGraphics (origine bas-gauche, contrairement à Vision).
+    private static func drawLogoPlaceholder(context: CGContext, width: Int, height: Int, center: CGPoint) {
         let radius = CGFloat(width) * 0.035
-        let center = CGPoint(x: CGFloat(width) - radius - CGFloat(width) * 0.03, y: radius + CGFloat(height) * 0.03)
 
         context.setFillColor(CGColor(red: 0.02, green: 0.02, blue: 0.06, alpha: 0.85))
         context.fillEllipse(in: CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2))

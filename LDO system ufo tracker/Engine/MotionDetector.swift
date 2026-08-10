@@ -30,6 +30,25 @@ final class MotionDetector {
     private let minimumBlobArea: CGFloat = 0.00004   // ≈ un carré de 6x6 px sur une image 1024x1024
     private let maximumBlobArea: CGFloat = 0.35      // évite de suivre un nuage entier ou un changement d'exposition global
 
+    /// Rapport largeur/hauteur (ou hauteur/largeur) maximal accepté pour un candidat plausible.
+    /// Un fil électrique, une antenne ou toute autre ligne fine statique traversant une grande partie
+    /// du cadre produit une boîte englobante très élancée (très large mais peu épaisse, ou l'inverse)
+    /// — une signature géométrique très différente de tout objet volant réel (avion, oiseau, drone),
+    /// même minuscule et lointain. Ajouté 2026-08-09 (signalé par Jean-David : le zoom automatique et
+    /// le recadrage ×2 ciblaient systématiquement le fil électrique fixe en bas de l'image plutôt que
+    /// l'avion réel — le fil, traversant presque toute la largeur du cadre, produit une boîte
+    /// englobante dont l'AIRE dépasse celle de l'avion, minuscule à cette distance, et gagnait donc
+    /// par défaut le repli « plus grand candidat » ci-dessous).
+    private let maximumElongationRatio: CGFloat = 10
+
+    /// `true` si `box` a une forme raisonnablement compacte (voir `maximumElongationRatio`) plutôt
+    /// qu'une ligne fine traversant le cadre.
+    private func isPlausibleObjectShape(_ box: CGRect) -> Bool {
+        let longSide = max(box.width, box.height)
+        let shortSide = max(min(box.width, box.height), 0.0001)
+        return (longSide / shortSide) < maximumElongationRatio
+    }
+
     /// Détecte les objets en mouvement sur l'ensemble de la séquence capturée.
     /// Retourne, pour chaque objet suivi, la liste chronologique de ses détections (utilisée
     /// ensuite pour calculer forme, trajectoire, vitesse, forces G).
@@ -50,7 +69,7 @@ final class MotionDetector {
 
             // 3. Contours du masque → boîtes englobantes candidates (repère normalisé Vision : 0..1, origine en bas-gauche).
             let candidateBoxes = detectContourBoundingBoxes(in: motionMask)
-                .filter { $0.width * $0.height >= minimumBlobArea && $0.width * $0.height <= maximumBlobArea }
+                .filter { $0.width * $0.height >= minimumBlobArea && $0.width * $0.height <= maximumBlobArea && isPlausibleObjectShape($0) }
 
             if activeTrackers.isEmpty {
                 // Aucun suivi en cours : on initialise un tracker par candidat détecté.
@@ -192,7 +211,7 @@ final class MotionDetector {
         guard let mask = thresholdFilter.outputImage else { return nil }
 
         let candidates = detectContourBoundingBoxes(in: mask)
-            .filter { $0.width * $0.height >= minimumBlobArea && $0.width * $0.height <= maximumBlobArea }
+            .filter { $0.width * $0.height >= minimumBlobArea && $0.width * $0.height <= maximumBlobArea && isPlausibleObjectShape($0) }
         guard !candidates.isEmpty else { return nil }
 
         if let previousCenter {
@@ -266,7 +285,7 @@ final class MotionDetector {
         guard let mask = thresholdFilter.outputImage else { return nil }
 
         let candidates = detectContourBoundingBoxes(in: mask)
-            .filter { $0.width * $0.height >= minimumBlobArea && $0.width * $0.height <= maximumBlobArea }
+            .filter { $0.width * $0.height >= minimumBlobArea && $0.width * $0.height <= maximumBlobArea && isPlausibleObjectShape($0) }
         guard !candidates.isEmpty else { return nil }
 
         // Même continuité de suivi que `brightestBoundingBox` (voir sa documentation) — évite qu'un

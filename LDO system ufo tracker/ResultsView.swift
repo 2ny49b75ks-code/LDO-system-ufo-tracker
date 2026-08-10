@@ -164,6 +164,16 @@ struct ResultsView: View {
                     .padding(.top, 4)
                 }
                 .padding()
+                // Logo LDO en haut à droite de la page de résultats — demande explicite de
+                // Jean-David (2026-08-09), même filigrane de marque que sur les 3 photos et la
+                // vidéo exportée (voir OverlayRenderer). Placé en overlay plutôt que dans le flux du
+                // VStack pour rester fixe en haut, superposé au contenu qui défile en-dessous.
+                .overlay(alignment: .topTrailing) {
+                    Image("Logo")
+                        .resizable()
+                        .frame(width: 36, height: 36)
+                        .padding(12)
+                }
     }
 
     private func distanceText() -> String {
