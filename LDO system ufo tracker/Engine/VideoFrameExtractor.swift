@@ -21,9 +21,9 @@ import simd
 /// `TrajectoryCalculator` et `DistanceEstimator` pour ce cas.
 enum VideoFrameExtractor {
     /// `timeRange` restreint l'extraction à un extrait de la vidéo (en secondes depuis le début) —
-    /// c'est le mécanisme derrière « choisir les 5 secondes à analyser » (voir `ClipTrimView`) :
+    /// c'est le mécanisme derrière « choisir les 4 secondes à analyser » (voir `ClipTrimView`) :
     /// on n'échantillonne et n'analyse jamais la vidéo entière, seulement l'extrait choisi. `nil`
-    /// couvre la vidéo entière (utilisé uniquement en secours, ex. vidéo trop courte pour 5s).
+    /// couvre la vidéo entière (utilisé uniquement en secours, ex. vidéo trop courte pour 4s).
     static func extractFrames(
         from videoURL: URL,
         poses: [PersistedFramePose] = [],
@@ -64,11 +64,21 @@ enum VideoFrameExtractor {
 
         // Même cadence que la capture en direct (voir CaptureManager.captureIntervalSeconds), sauf
         // pour un extrait plus long que ~20s où l'on espace davantage pour rester sous `maxFrames`
-        // (ne devrait normalement pas arriver avec un extrait de 5s).
+        // (ne devrait normalement pas arriver avec un extrait de 4s).
         let interval = max(1.0 / 12.0, rangeDuration / Double(maxFrames))
 
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
+        // Plafond de résolution des images extraites (2026-08-09, signalé par Jean-David : l'app
+        // fermait toute seule, sans aucun résultat, en analysant une vidéo de bibliothèque réelle
+        // filmée en 4K). Sans plafond, chaque image gardait la résolution SOURCE complète en
+        // mémoire — pour un extrait de 4 secondes (~60 images à 12 im/s, voir ClipTrimView) en 4K,
+        // ça représente près de 2 Go de tampons d'images rien que pour l'analyse, largement de quoi
+        // déclencher un arrêt forcé par iOS pour pression mémoire (pas une erreur visible, l'app
+        // "ferme toute seule"). Aucune étape du pipeline n'a besoin de la pleine résolution source :
+        // la détection Vision se limite déjà à 512px (voir MotionDetector), et les 3 photos finales
+        // (PhotoComposer) restent largement nettes à cette résolution pour un usage écran/partage.
+        generator.maximumSize = CGSize(width: 1920, height: 1920)
         // Tolérance égale à la moitié de l'intervalle d'échantillonnage plutôt que zéro : exiger un
         // positionnement image-exacte est plus lent ET plus susceptible d'échouer silencieusement
         // (`try?` ci-dessous) sur une vidéo externe dont la structure d'encodage (images-clés, etc.)

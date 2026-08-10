@@ -18,7 +18,7 @@ final class SessionAnalyzer: ObservableObject {
     @Published private(set) var progress: Double = 0
     @Published private(set) var progressLabel: String = ""
 
-    /// `clipRange` : extrait de 5 secondes choisi par l'utilisateur (voir `ClipTrimView`) — seul cet
+    /// `clipRange` : extrait de 4 secondes choisi par l'utilisateur (voir `ClipTrimView`) — seul cet
     /// extrait est échantillonné et analysé, jamais la vidéo entière (voir `VideoFrameExtractor`).
     /// La vidéo complète, elle, reste intacte pour la visualisation (`videoURLWithOverlays`).
     /// `mode` : choix Nuit/Jour de l'utilisateur, transmis tel quel à `AnalysisEngine`.

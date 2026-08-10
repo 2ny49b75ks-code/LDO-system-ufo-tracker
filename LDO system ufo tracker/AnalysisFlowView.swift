@@ -22,7 +22,7 @@ struct AnalysisTarget: Identifiable {
 }
 
 /// Enchaîne les 3 étapes de l'analyse d'une vidéo déjà enregistrée, dans une seule présentation
-/// plein écran : choix de l'extrait de 5s (`ClipTrimView`), calcul avec progression
+/// plein écran : choix de l'extrait de 4s (`ClipTrimView`), calcul avec progression
 /// (`AnalysisProgressView`), puis résultats (`ResultsView`). `onFinished` remonte jusqu'à l'écran
 /// de capture — voir la réinitialisation automatique après un cycle complet capture+analyse.
 struct AnalysisFlowView: View {
