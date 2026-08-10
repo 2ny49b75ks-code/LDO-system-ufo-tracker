@@ -272,7 +272,7 @@ final class ShapeClassifier {
         if motion.oscillationRate < 0.1 && sizeVariability < 0.15 {
             return ("Probable avion ou satellite (trajectoire stable)", 0.4)
         }
-        // Silhouette nettement plus large que haute (envergure des ailes) + mouvement peu oscillant
+        // Silhouette au moins aussi large que haute (envergure des ailes) + mouvement peu oscillant
         // => avion, même si la taille apparente varie plus que le seuil strict ci-dessus (normal en
         // filmant à main levée en zoomant sur un avion lointain — l'objet reste minuscule à l'écran,
         // sujet à la mise au point/l'exposition qui fait varier légèrement sa taille apparente d'une
@@ -280,8 +280,13 @@ final class ShapeClassifier {
         // stabilité de taille : un avion garde son envergure caractéristique quelle que soit la
         // fluctuation de taille détectée. Ajouté 2026-08-08 suite à un avion réel non reconnu (tombait
         // dans "non identifiée" malgré une trajectoire quasi parfaitement rectiligne, R² 0.97).
-        if motion.oscillationRate < 0.15 && aspectRatio >= 1.4 {
-            return ("Probable avion ou satellite (silhouette large, envergure d'ailes)", 0.45)
+        // Seuil recalibré à 0,7 (2026-08-09, à partir de données réelles) : le rapport envergure/
+        // longueur d'un avion de ligne se situe typiquement entre 0,7 et 1,1 (Boeing 737 : ~0,9 ;
+        // A350/787 : ~0,9-1,0) — l'ancien seuil de 1,4 exigeait à tort une silhouette bien plus large
+        // que haute, alors qu'un avion vu sous la plupart des angles (léger virage, montée) produit une
+        // silhouette proche du carré, pas une forme franchement "large".
+        if motion.oscillationRate < 0.15 && aspectRatio >= 0.7 {
+            return ("Probable avion ou satellite (silhouette compatible avec un avion)", 0.45)
         }
         // Aucun signal net dominant => on ne force pas une conclusion.
         return ("Forme non identifiée avec certitude", 0.15)
