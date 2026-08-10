@@ -51,12 +51,24 @@ final class ShapeClassifier {
         //    asymétrie. Voir `heuristicClassify`.
         let aspectRatio = aspectRatioSignature(detections)
 
+        // 2ter. Signal de rectitude du chemin global : déplacement net (début -> fin) divisé par la
+        //    longueur totale du chemin parcouru — proche de 1 pour une trajectoire qui ne revient
+        //    jamais sur elle-même, plus bas pour un chemin qui serpente. Ajouté 2026-08-09 (signalé
+        //    par Jean-David sur un avion réel classé à tort « oiseau ») : contrairement au taux
+        //    d'oscillation (`motion.oscillationRate`), qui compte les inversions de direction
+        //    IMAGE PAR IMAGE et se fait donc facilement polluer par le tremblement de la main en
+        //    suivant l'avion au zoom, la rectitude du chemin GLOBAL reste fiable même en présence de
+        //    ce bruit local — un avion reste net-linéaire d'un bout à l'autre du clip malgré un léger
+        //    zigzag image par image, ce qu'un oiseau (qui « vole rarement en ligne droite », selon la
+        //    règle explicite de Jean-David) ne produit pas.
+        let (straightness, totalDisplacement) = pathStraightnessAndDisplacement(detections)
+
         // 3. Isolement de la zone lumineuse sur l'image médiane (la plus représentative).
         let midDetection = detections[safe: detections.count / 2]
         let luminous = midDetection.flatMap { isolateLuminousRegion(for: $0, frames: frames) }
 
         // 4. Classification heuristique combinant ces signaux.
-        let (label, confidence) = heuristicClassify(motion: motion, sizeVariability: sizeVariability, aspectRatio: aspectRatio, mode: mode)
+        let (label, confidence) = heuristicClassify(motion: motion, sizeVariability: sizeVariability, aspectRatio: aspectRatio, straightness: straightness, totalDisplacement: totalDisplacement, mode: mode)
 
         return ShapeResult(label: label, confidence: confidence, luminousRegion: luminous)
     }
@@ -202,7 +214,26 @@ final class ShapeClassifier {
         return ratios.reduce(0, +) / Double(ratios.count)
     }
 
-    private func heuristicClassify(motion: MotionSignature, sizeVariability: Double, aspectRatio: Double, mode: CaptureMode) -> (String, Double) {
+    /// Rectitude du chemin global (voir commentaire au point d'appel) : 1.0 = chemin parfaitement
+    /// rectiligne du premier au dernier point détecté, plus bas pour un chemin qui serpente ou
+    /// revient sur lui-même. `totalDisplacement` (déplacement net, même unité normalisée 0...1 que
+    /// les boîtes de détection) sert de garde-fou : un objet quasi immobile qui tremblote sur place
+    /// peut avoir un chemin « droit » par pur hasard sur un déplacement négligeable, ce qui ne doit
+    /// pas suffire à conclure à un avion.
+    private func pathStraightnessAndDisplacement(_ detections: [Detection]) -> (straightness: Double, totalDisplacement: Double) {
+        let centers = detections.map { CGPoint(x: $0.boundingBox.midX, y: $0.boundingBox.midY) }
+        guard let first = centers.first, let last = centers.last, centers.count >= 2 else { return (1, 0) }
+
+        var pathLength: CGFloat = 0
+        for i in 1..<centers.count {
+            pathLength += hypot(centers[i].x - centers[i-1].x, centers[i].y - centers[i-1].y)
+        }
+        let netDisplacement = hypot(last.x - first.x, last.y - first.y)
+        guard pathLength > 0 else { return (1, 0) }
+        return (Double(netDisplacement / pathLength), Double(netDisplacement))
+    }
+
+    private func heuristicClassify(motion: MotionSignature, sizeVariability: Double, aspectRatio: Double, straightness: Double, totalDisplacement: Double, mode: CaptureMode) -> (String, Double) {
         // En Mode Nuit, la détection ne porte que sur une source lumineuse isolée (voir
         // MotionDetector.detectByLuminosity) — un oiseau ou un insecte en vol de nuit ne produit pas
         // de lumière propre, donc ces deux explications sont exclues d'office (règle explicite de
@@ -215,7 +246,24 @@ final class ShapeClassifier {
             if motion.oscillationRate > 0.5 && motion.averageDisplacementPerFrame < 0.05 {
                 return ("Probable insecte proche de l'objectif", 0.55)
             }
-            // Oscillation modérée et régulière => battements d'ailes, évoque un oiseau.
+        }
+
+        // Trajectoire globale continue sur un déplacement réel à l'écran => avion, drone ou
+        // satellite. Vérifié EN PRIORITÉ, avant le signal d'oscillation ci-dessous — règle explicite
+        // de Jean-David (« un avion a une trajectoire continue, un oiseau vole rarement en ligne
+        // droite »), corrige un bug réel (2026-08-09) où un avion filmé en zoomant à la main était
+        // classé « oiseau » : le tremblement de la main en le suivant faisait apparaître assez
+        // d'inversions de direction IMAGE PAR IMAGE pour tomber dans la fourchette d'oscillation d'un
+        // battement d'aile, alors que le chemin global restait net-linéaire (mêmes causes que le bug
+        // de zigzag déjà corrigé dans TrajectoryCalculator, mais ici sur la classification de forme).
+        if straightness > 0.85 && totalDisplacement > 0.05 {
+            return ("Probable avion ou satellite (trajectoire continue)", 0.55)
+        }
+
+        if mode == .day {
+            // Oscillation modérée et régulière, SUR UN CHEMIN QUI SERPENTE (le chemin global n'est
+            // pas resté net-linéaire, sinon la règle de trajectoire continue ci-dessus aurait déjà
+            // conclu à un avion) => battements d'ailes, évoque un oiseau.
             if motion.oscillationRate > 0.2 && motion.oscillationRate <= 0.5 {
                 return ("Probable oiseau (mouvement oscillant régulier)", 0.45)
             }

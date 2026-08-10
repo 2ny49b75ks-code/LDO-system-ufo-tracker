@@ -18,13 +18,25 @@ import AVFAudio
 final class SoundClassifier {
 
     /// Confiance minimale sous laquelle on ne retient pas une catégorie (évite les faux positifs
-    /// sur un son ambiant faible ou du bruit de vent).
-    private let confidenceThreshold: Double = 0.5
+    /// sur un son ambiant faible ou du bruit de vent). Abaissé de 0,5 à 0,3 (2026-08-09, signalé par
+    /// Jean-David : un avion de ligne clairement audible à l'oreille sur sa vidéo n'était pas détecté)
+    /// — un moteur d'avion filmé à distance avec un micro de téléphone, souvent partiellement couvert
+    /// par le bruit de vent/de prise en main, ne franchissait quasiment jamais le seuil de 0,5 même
+    /// quand le classificateur identifiait correctement la bonne catégorie. Reste au-dessus du bruit
+    /// de fond pur (un classificateur qui hésite entre plusieurs étiquettes sans aucune ne dépassant
+    /// même 0,3 reflète une vraie incertitude, pas un simple son distant).
+    private let confidenceThreshold: Double = 0.3
 
     /// Correspondance entre les étiquettes du classificateur Apple et les catégories utiles à LDO.
+    /// Catégories moteur/avion élargies (2026-08-09) : la seule présence de "Aircraft"/"Fixed-wing
+    /// aircraft, airplane" ne couvrait pas les cas où le classificateur identifie plus spécifiquement
+    /// le BRUIT DE MOTEUR entendu (jet lointain, hélice) sans forcément reconnaître la silhouette
+    /// "avion" en tant que telle depuis le son seul.
     private let categoryMapping: [String: String] = [
         "Aircraft": "avion",
         "Fixed-wing aircraft, airplane": "avion",
+        "Aircraft engine": "avion",
+        "Jet engine": "avion",
         "Propeller, airscrew": "avion ou drone à hélice",
         "Helicopter": "hélicoptère",
         "Drone": "drone",

@@ -43,7 +43,14 @@ final class SpeedCalculator {
         }
 
         let average = velocitiesKmh.map { $0.value }.reduce(0, +) / Double(velocitiesKmh.count)
-        let max = velocitiesKmh.map { $0.value }.max() ?? 0
+        // Pic "robuste" plutôt que le simple maximum brut — même bug que celui corrigé ci-dessous
+        // pour l'accélération (voir `robustPeak`) : un seul écart de suivi isolé sur une image (le
+        // tracker qui accroche un instant le bord d'une traînée de condensation, par ex.) suffit à
+        // produire un pic de vitesse instantanée aberrant, sans rapport avec le déplacement réel de
+        // l'objet. Corrige un cas réel (signalé par Jean-David, 2026-08-09) : une vitesse moyenne de
+        // 132 km/h contre un maximum de 1302 km/h sur la même vidéo — un écart de 10× entre les deux
+        // est la signature d'un point isolé, pas d'une vraie pointe de vitesse soutenue.
+        let max = Self.robustPeak(velocitiesKmh.map { $0.value })
         let isStationary = max < stationaryThresholdKmh
 
         // 2. Accélération linéaire (m/s²) entre échantillons consécutifs de vitesse.
@@ -54,7 +61,13 @@ final class SpeedCalculator {
             let dvMetersPerSecond = (velocitiesKmh[i].value - velocitiesKmh[i - 1].value) / 3.6
             accelerations.append(abs(dvMetersPerSecond / dt))
         }
-        let maxAcceleration = accelerations.max() ?? 0
+        // Pic "robuste" plutôt que le simple maximum brut : une dérivée seconde calculée sur des
+        // échantillons image par image est extrêmement sensible à un seul écart de suivi isolé (même
+        // bug que celui corrigé pour les forces G dans TrajectoryCalculator.robustPeak — voir ce
+        // commentaire pour le détail). Corrige un cas réel (signalé par Jean-David, 2026-08-09) : un
+        // avion volant à vitesse quasi constante affichait ~4197 m/s² d'accélération, provenant d'un
+        // unique écart de détection sur une image, pas d'une vraie variation de vitesse soutenue.
+        let maxAcceleration = Self.robustPeak(accelerations)
 
         // 3. "Défie la physique" seulement si l'accélération extrême est SOUTENUE (au moins 2 échantillons
         //    consécutifs), pas un pic isolé qui serait plus probablement une erreur de détection.
@@ -74,14 +87,29 @@ final class SpeedCalculator {
         )
     }
 
+    /// Ne retient un pic de la série que s'il est corroboré par l'échantillon voisin (même ordre de
+    /// grandeur sur 2 échantillons consécutifs, pas juste 1) — filtre le bruit d'un seul écart de
+    /// détection isolé sans écraser une vraie variation soutenue sur plusieurs images. Voir le
+    /// commentaire au point d'appel.
+    private static func robustPeak(_ values: [Double]) -> Double {
+        guard values.count >= 2 else { return values.first ?? 0 }
+        var corroboratedPeaks: [Double] = []
+        for i in 1..<values.count {
+            corroboratedPeaks.append(min(values[i-1], values[i]))
+        }
+        return corroboratedPeaks.max() ?? 0
+    }
+
     /// Étiquette informative comparant la vitesse à des repères connus. Purement indicative :
     /// ne sert pas à trancher seule le verdict final, seulement à donner un contexte à l'utilisateur.
+    /// Fourchette avion de ligne corrigée à 450-1000 km/h (2026-08-09, précisé par Jean-David) — 300
+    /// km/h correspond plutôt à une phase d'approche/atterrissage qu'à un vol de croisière.
     private func comparisonLabel(for maxKmh: Double, isStationary: Bool) -> String {
         if isStationary { return "Objet stationnaire (pas de déplacement mesurable)" }
         switch maxKmh {
         case ..<80: return "Comparable à un drone de loisir ou un oiseau (<80 km/h)"
-        case 80..<300: return "Comparable à un petit avion ou hélicoptère (80-300 km/h)"
-        case 300..<1000: return "Comparable à un avion de ligne en croisière (300-1000 km/h)"
+        case 80..<450: return "Comparable à un petit avion ou hélicoptère (80-450 km/h)"
+        case 450..<1000: return "Comparable à un avion de ligne en croisière (450-1000 km/h)"
         case 1000..<3000: return "Supérieur à un avion de ligne, comparable à un avion militaire rapide"
         default: return "Vitesse très supérieure aux aéronefs connus à cette distance estimée"
         }

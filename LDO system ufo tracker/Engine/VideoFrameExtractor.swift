@@ -21,9 +21,9 @@ import simd
 /// `TrajectoryCalculator` et `DistanceEstimator` pour ce cas.
 enum VideoFrameExtractor {
     /// `timeRange` restreint l'extraction à un extrait de la vidéo (en secondes depuis le début) —
-    /// c'est le mécanisme derrière « choisir les 2 secondes à analyser » (voir `ClipTrimView`) :
+    /// c'est le mécanisme derrière « choisir les 5 secondes à analyser » (voir `ClipTrimView`) :
     /// on n'échantillonne et n'analyse jamais la vidéo entière, seulement l'extrait choisi. `nil`
-    /// couvre la vidéo entière (utilisé uniquement en secours, ex. vidéo trop courte pour 2s).
+    /// couvre la vidéo entière (utilisé uniquement en secours, ex. vidéo trop courte pour 5s).
     static func extractFrames(
         from videoURL: URL,
         poses: [PersistedFramePose] = [],
@@ -64,7 +64,7 @@ enum VideoFrameExtractor {
 
         // Même cadence que la capture en direct (voir CaptureManager.captureIntervalSeconds), sauf
         // pour un extrait plus long que ~20s où l'on espace davantage pour rester sous `maxFrames`
-        // (ne devrait normalement pas arriver avec un extrait de 2s).
+        // (ne devrait normalement pas arriver avec un extrait de 5s).
         let interval = max(1.0 / 12.0, rangeDuration / Double(maxFrames))
 
         let generator = AVAssetImageGenerator(asset: asset)

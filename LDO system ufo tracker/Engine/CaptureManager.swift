@@ -87,6 +87,14 @@ final class CaptureManager: NSObject, ObservableObject {
         }
         let config = ARWorldTrackingConfiguration()
         config.providesAudioData = true
+        // Boussole activée (2026-08-09, demande explicite de Jean-David) : nécessaire pour que
+        // l'azimut calculé à partir de la pose caméra (voir TrajectoryCalculator.observedAzimuthElevation)
+        // corresponde à une direction réelle (nord vrai), pas un repère arbitraire fixé au démarrage
+        // de l'enregistrement — condition pour pouvoir comparer honnêtement la direction observée à
+        // la position calculée d'un astre connu (voir CelestialPositionCalculator/VerdictCalculator).
+        // Sans ceci, .gravity (par défaut) aligne seulement l'axe vertical, pas la boussole — tout
+        // "azimut" resterait sans rapport avec le nord réel.
+        config.worldAlignment = .gravityAndHeading
 
         // Résolution vidéo maximale disponible sur l'appareil (voir `configureHDVideo`) : on la
         // sélectionne directement dans la configuration ARKit plutôt que via une AVCaptureSession
@@ -341,9 +349,44 @@ final class CaptureManager: NSObject, ObservableObject {
             latitude: location?.coordinate.latitude, longitude: location?.coordinate.longitude
         )
 
-        // Sauvegarde également dans Photos/iCloud, comme avant (vidéo brute — les photos avec
-        // incrustations ne sont générées qu'au moment de l'analyse, voir SessionAnalyzer).
+        // Sauvegarde également dans Photos/iCloud, comme avant (vidéo brute — les photos AVEC
+        // incrustations, elles, ne sont générées qu'au moment de l'analyse, voir SessionAnalyzer).
         PhotoLibrarySaver.saveVideo(at: destinationURL)
+
+        // Sauvegarde immédiate des 3 photos (plan large, zoom automatique maximum sur la cible, zoom
+        // fixe ×2 — voir PhotoComposer), SANS incrustations, dès la fin de l'enregistrement LIVE —
+        // demande explicite de Jean-David (2026-08-09) : « sur prise capture en LIVE tu n'enregistre
+        // pas de photo, enregistre les 3 photos comme j'avais demandé ». Auparavant, seul le fichier
+        // vidéo était sauvegardé à cette étape ; les 3 photos n'étaient produites qu'en choisissant
+        // ensuite « Mes enregistrements » puis en lançant l'analyse — un geste manuel séparé. Détection
+        // légère (mêmes heuristiques que l'étape 2 de AnalysisEngine, voir MotionDetector) sur le
+        // buffer déjà en mémoire, en tâche de fond pour ne pas bloquer l'interface juste après l'arrêt
+        // de l'enregistrement — PhotoComposer produit toujours au moins la photo « plan large » même
+        // sans détection exploitable (voir sa dégradation gracieuse), donc ceci sauvegarde bien 3
+        // photos (ou au moins 1) à chaque enregistrement, indépendamment du succès de l'analyse
+        // complète (qui reste, elle, déclenchée séparément par l'utilisateur — voir SessionAnalyzer).
+        let mode = captureMode
+        DispatchQueue.global(qos: .userInitiated).async {
+            let motionDetector = MotionDetector()
+            var trackedObjects: [TrackedObject]
+            switch mode {
+            case .night:
+                trackedObjects = motionDetector.detectByLuminosity(in: capturedFrames)
+                if trackedObjects.isEmpty {
+                    trackedObjects = motionDetector.detectMovingObjects(in: capturedFrames)
+                }
+            case .day:
+                trackedObjects = motionDetector.detectDarkObjectOnBrightSky(in: capturedFrames)
+                if trackedObjects.isEmpty {
+                    trackedObjects = motionDetector.detectMovingObjects(in: capturedFrames)
+                }
+            }
+            let mainObject = trackedObjects.max(by: { $0.detections.count < $1.detections.count })
+            let detections = mainObject?.detections ?? []
+            let photos = PhotoComposer.composePhotoSet(frames: capturedFrames, detections: detections)
+            guard !photos.isEmpty else { return }
+            PhotoLibrarySaver.savePhotos(photos)
+        }
     }
 }
 

@@ -62,7 +62,7 @@ final class TrajectoryCalculator {
         //    pour préserver les pics réels de vitesse pendant un virage rapide.
         let angularVelocities = angularVelocity(angularSamples)     // degrés/seconde
         let angularAcceleration = derivative(angularVelocities)     // degrés/seconde²
-        let maxAngularAcceleration = angularAcceleration.map { abs($0.value) }.max() ?? 0
+        let maxAngularAcceleration = robustPeak(angularAcceleration)
 
         // 5. Détection des changements de direction brusques (virages) par courbure locale — aussi
         //    sur les échantillons bruts, pour la même raison.
@@ -150,6 +150,33 @@ final class TrajectoryCalculator {
         frames.min(by: { abs($0.timestamp - timestamp) < abs($1.timestamp - timestamp) })
     }
 
+    /// Azimut/élévation réels (degrés) d'un échantillon représentatif de la séquence — utilisé pour
+    /// comparer la direction observée de l'objet à la position calculée d'un astre connu (voir
+    /// `CelestialPositionCalculator`/`VerdictCalculator`). Repose sur la boussole d'ARKit
+    /// (`.gravityAndHeading`, voir `CaptureManager.configureARTracking`) : sans elle (vidéo importée
+    /// de la bibliothèque, ou pose ARKit absente), ce résultat n'a pas de sens et retourne `nil`.
+    ///
+    /// CONVENTION NON VÉRIFIÉE SUR APPAREIL (2026-08-09) : la documentation Apple pour
+    /// `.gravityAndHeading` confirme que l'axe Z est aligné sur la boussole, mais ne précise pas
+    /// explicitement si -Z ou +Z pointe vers le nord vrai (un fil de discussion sur les forums Apple
+    /// développeurs documente même des cas où le cap ARKit ne correspond pas exactement au cap
+    /// physique réel de l'appareil). Convention choisie ici : -Z = nord, +X = est — la plus commune
+    /// dans les implémentations publiques ARKit+boussole trouvées. À VÉRIFIER sur appareil réel avec
+    /// une boussole avant de faire confiance aux résultats — si les directions sortent inversées ou
+    /// décalées de 180°, inverser le signe de `direction.z` ci-dessous suffit à corriger.
+    func observedAzimuthElevation(detections: [Detection], frames: [CapturedFrame]) -> (azimuthDegrees: Double, elevationDegrees: Double)? {
+        guard !detections.isEmpty else { return nil }
+        let midDetection = detections[detections.count / 2]
+        guard let frame = nearestFrame(to: midDetection.timestamp, in: frames),
+              let direction = rayDirection(for: midDetection.boundingBox, frame: frame)
+        else { return nil }
+
+        let azimuthDeg = atan2(direction.x, -direction.z) * 180 / .pi
+        let normalizedAzimuth = azimuthDeg < 0 ? azimuthDeg + 360 : azimuthDeg
+        let elevationDeg = asin(max(-1, min(1, direction.y))) * 180 / .pi
+        return (normalizedAzimuth, elevationDeg)
+    }
+
     // MARK: - 2. Lissage
 
     private func smooth(_ samples: [AngularSample], window: Int) -> [AngularSample] {
@@ -219,6 +246,25 @@ final class TrajectoryCalculator {
         return acos(dot)
     }
 
+    /// Pic d'accélération angulaire "robuste" : le simple maximum d'une série DEUX FOIS dérivée
+    /// (vitesse puis accélération) est extrêmement sensible au bruit — un seul écart de suivi d'une
+    /// image à l'autre (tremblement, contour de traînée de condensation confondu avec le bord de
+    /// l'avion, etc.) suffit à produire un pic isolé aberrant, amplifié par la double dérivation.
+    /// On ne retient donc un pic que s'il est corroboré par l'échantillon voisin (même ordre de
+    /// grandeur sur 2 échantillons consécutifs, pas juste 1) — même principe que le filtre
+    /// « accélération soutenue » déjà utilisé dans `SpeedCalculator` pour la même raison.
+    /// Corrige un bug réel (signalé par Jean-David, 2026-08-09) : un avion volant en ligne quasi
+    /// parfaitement droite affichait ~427,9 G, provenant d'un unique écart de détection isolé sur une
+    /// image, pas d'un vrai virage.
+    private func robustPeak(_ series: [TimedValue]) -> Double {
+        guard series.count >= 2 else { return series.first.map { abs($0.value) } ?? 0 }
+        var corroboratedPeaks: [Double] = []
+        for i in 1..<series.count {
+            corroboratedPeaks.append(min(abs(series[i-1].value), abs(series[i].value)))
+        }
+        return corroboratedPeaks.max() ?? 0
+    }
+
     // MARK: - 5. Virages brusques
 
     private func detectSharpTurns(_ samples: [AngularSample], distanceMeters: Double?) -> [CurvatureEvent] {
@@ -265,13 +311,24 @@ final class TrajectoryCalculator {
         // Approximation : accélération latérale (m/s²) ≈ distance (m) × accélération angulaire (rad/s²)
         // valable pour un mouvement perpendiculaire à la ligne de visée — cas le plus courant en observation manuelle.
         let lateralAcceleration = distance * angularAccelRadPerS2
-        let g = lateralAcceleration / 9.81
+        let lateralG = lateralAcceleration / 9.81
+
+        // Charge totale en G (facteur de charge, « load factor » en aéronautique) — PAS seulement la
+        // composante latérale du virage. En vol rectiligne stable, un aéronef supporte déjà 1 G (la
+        // portance équilibre la gravité) ; seul un VIRAGE l'augmente au-delà de 1. Formule standard :
+        // n = √(1 + (a_latérale / g)²) — vaut exactement 1 G en ligne droite (a_latérale = 0) et croît
+        // avec la sévérité du virage. Calibrage corrigé (2026-08-09, signalé par Jean-David) :
+        // l'ancienne formule affichait directement a_latérale/g comme « la » force G — proche de 0 G
+        // en vol rectiligne au lieu du 1 G physiquement attendu — et, combinée au bruit de détection
+        // non filtré (voir `robustPeak`), pouvait produire des pics physiquement absurdes (427,9 G)
+        // sur un avion volant pourtant presque parfaitement droit.
+        let totalG = (lateralG * lateralG + 1).squareRoot()
 
         // Confiance : directement liée à la confiance de l'estimation de distance elle-même
         // (fournie par l'étape 8). Ici on plafonne prudemment car aucune mesure directe de distance
         // n'est disponible pour un objet aérien lointain (distance par triangulation uniquement).
         let confidence = 0.35
-        return (g, confidence)
+        return (totalG, confidence)
     }
 
     private func center(_ box: CGRect) -> CGPoint {

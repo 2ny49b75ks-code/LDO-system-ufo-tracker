@@ -24,14 +24,38 @@ final class VerdictCalculator {
     private let confidentKnownShapeThreshold: Double = 0.4
 
     func computeVerdict(session: AnalysisSession, shape: ShapeResult, mode: CaptureMode) -> VerdictResult {
+        // -1. Sur-priorité encore plus absolue que la forme ci-dessous : si la direction observée
+        //     correspond à la position calculée d'un astre connu (Soleil, Lune, Vénus, Jupiter, étoile
+        //     fixe brillante — voir CelestialPositionCalculator), c'est une correspondance GÉOMÉTRIQUE
+        //     réelle, indépendante de la classification de forme (qui, pour un point lumineux
+        //     stationnaire, a souvent une confiance faible et ne déclencherait pas la règle #0
+        //     ci-dessous). Demande explicite de Jean-David (2026-08-09) : distinguer un OVNI
+        //     stationnaire d'une étoile/planète brillante (Vénus = cause n°1 de signalements dans le
+        //     monde). Reste qualifié d'« approximatif » dans le texte (tolérance 12°, voir
+        //     AnalysisEngine) plutôt que présenté comme une certitude absolue.
+        if let matchedBody = session.matchedCelestialBody, let separation = session.celestialMatchSeparationDegrees {
+            return VerdictResult(
+                label: "Probablement identifié (objet connu)",
+                percent: 0,
+                factors: ["Direction observée compatible avec la position de \(matchedBody) à ce moment/lieu (écart : \(String(format: "%.1f", separation))°, approximatif) — aucun autre facteur ne peut compenser une correspondance astronomique aussi claire"]
+            )
+        }
+
         // 0. Sur-priorité absolue : si la forme est identifiée avec une confiance suffisante comme
         //    quelque chose de connu (main, insecte, oiseau, avion/satellite) — pas juste "non
         //    identifiée avec certitude" — aucun autre facteur ne doit pouvoir faire remonter le
         //    verdict. Une main qui bouge devant la caméra ne devient pas un phénomène ambigu parce
         //    que sa trajectoire est irrégulière ou que le son est absent : c'est une main.
+        //    EXCEPTION (2026-08-09) : si le recoupement de distance (voir DistanceEstimator) a
+        //    détecté un désaccord franc entre la distance par taille supposée et la vitesse réelle
+        //    typique du type classifié, cette identification n'est PAS aussi claire qu'elle en a
+        //    l'air — un avion qui n'a pas la vitesse d'un avion à la distance que sa taille implique
+        //    n'est pas un avion ordinaire. On laisse alors les facteurs ci-dessous s'appliquer plutôt
+        //    que de court-circuiter à 0%.
         if shape.confidence >= confidentKnownShapeThreshold,
            !shape.label.contains("non identifiée"),
-           shape.label != "Données insuffisantes" {
+           shape.label != "Données insuffisantes",
+           session.distanceCrossCheckAgrees != false {
             return VerdictResult(
                 label: "Probablement identifié (objet connu)",
                 percent: 0,
@@ -133,6 +157,17 @@ final class VerdictCalculator {
         if session.isZigzagTrajectory {
             score += 25
             factors.append("Trajectoire en zigzag gauche-droite (\(session.trajectoryReversalCount) changements de direction) — atypique d'un aéronef, drone ou satellite connu")
+        }
+
+        // 8bis. Désaccord entre les deux méthodes de distance (taille supposée vs vitesse réelle
+        // typique du type classifié — voir DistanceEstimator) : si l'objet a été classé comme un
+        // type connu (avion, oiseau) mais que la distance qu'implique sa taille suppose une vitesse
+        // très différente de ce que ce type produit normalement, l'objet ne se comporte pas comme un
+        // membre typique de sa catégorie — un signal en soi. Demande explicite de Jean-David
+        // (2026-08-09) : chaque type a ses propres caractéristiques standard, seule la distance varie.
+        if session.distanceCrossCheckAgrees == false {
+            score += 15
+            factors.append("La distance déduite de la taille supposée (\(session.shapeDescription)) ne concorde pas avec sa vitesse réelle typique — comportement atypique pour ce type d'objet")
         }
 
         score = max(0, score)

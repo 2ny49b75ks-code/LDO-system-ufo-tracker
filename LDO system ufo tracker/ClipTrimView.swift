@@ -8,9 +8,11 @@ import SwiftUI
 import AVKit
 import AVFoundation
 
-/// Étape 1 du flux d'analyse : l'utilisateur choisit les 2 secondes de la vidéo à faire analyser.
-/// L'analyse ne porte jamais sur la vidéo entière — seulement sur cet extrait — pour rester rapide
-/// et ciblée ; la vidéo complète reste intacte pour la visualisation (voir `AnalysisFlowView`).
+/// Étape 1 du flux d'analyse : l'utilisateur choisit les 5 secondes de la vidéo à faire analyser
+/// (durée portée de 2s à 5s le 2026-08-09, demande explicite de Jean-David sur l'analyse d'une
+/// vidéo de bibliothèque — 2s coupait trop souvent l'avion en plein mouvement). L'analyse ne porte
+/// jamais sur la vidéo entière — seulement sur cet extrait — pour rester rapide et ciblée ; la vidéo
+/// complète reste intacte pour la visualisation (voir `AnalysisFlowView`).
 struct ClipTrimView: View {
     let videoURL: URL
     let initialMode: CaptureMode
@@ -20,7 +22,7 @@ struct ClipTrimView: View {
     /// alors entièrement automatique comme avant.
     let onConfirm: (ClosedRange<Double>?, CaptureMode, CGPoint?) -> Void
 
-    private let clipDuration: Double = 2.0
+    private let clipDuration: Double = 5.0
 
     @State private var player: AVPlayer
     @State private var duration: Double = 0
@@ -61,7 +63,7 @@ struct ClipTrimView: View {
             }
             .padding(.horizontal)
 
-            Text("Choisissez les 2 secondes à analyser")
+            Text("Choisissez les 5 secondes à analyser")
                 .font(.headline)
                 .foregroundColor(.white)
             Text("La vidéo complète reste disponible telle quelle — seul cet extrait sert au calcul.")
@@ -211,7 +213,7 @@ struct ClipTrimView: View {
     }
 
     /// Génère des miniatures réparties uniformément sur toute la vidéo, pour donner un aperçu visuel
-    /// de l'enregistrement complet avant de choisir les 2 secondes à analyser.
+    /// de l'enregistrement complet avant de choisir les 5 secondes à analyser.
     private static func generateFilmstrip(videoURL: URL, duration: Double, count: Int = 10) async -> [UIImage] {
         let asset = AVURLAsset(url: videoURL)
         let generator = AVAssetImageGenerator(asset: asset)
@@ -238,7 +240,7 @@ struct ClipTrimView: View {
 }
 
 /// Bandeau de miniatures représentant toute la vidéo enregistrée, avec un cadre vert indiquant
-/// l'extrait de 2 secondes actuellement sélectionné — permet de visualiser en un coup d'œil les
+/// l'extrait de 5 secondes actuellement sélectionné — permet de visualiser en un coup d'œil les
 /// parties de la vidéo disponibles avant de choisir laquelle faire analyser. Touche/glisse
 /// directement sur le bandeau pour déplacer la sélection, en plus du curseur ci-dessous.
 private struct FilmstripView: View {

@@ -79,6 +79,10 @@ struct ResultsView: View {
                             resultRow("Accélération", "⚠️ \(Int(session.maxLinearAccelerationMS2)) m/s² soutenus — dépasse la performance des aéronefs connus")
                         }
                         resultRow("Distance estimée", distanceText())
+                        if let matchedBody = session.matchedCelestialBody {
+                            resultRow("Correspondance astronomique", "Direction compatible avec \(matchedBody)" +
+                                      (session.celestialMatchSeparationDegrees.map { " (écart : \(String(format: "%.1f", $0))°, approximatif)" } ?? ""))
+                        }
                         resultRow("Son", session.soundClassification)
                         resultRow("Date et heure", session.timestamp.formatted())
                     }

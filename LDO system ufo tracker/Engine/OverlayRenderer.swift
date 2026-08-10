@@ -91,18 +91,33 @@ enum OverlayRenderer {
         let asset = AVURLAsset(url: sourceURL)
         guard let videoTrack = asset.tracks(withMediaType: .video).first else { return sourceURL }
 
+        // Orientation réelle de la piste source, déduite de son `preferredTransform` — PAS supposée
+        // fixe. Bug corrigé (2026-08-09, signalé par Jean-David : plantage de l'app après analyse
+        // d'une vidéo importée de la bibliothèque) : le compositeur personnalisé ci-dessous appliquait
+        // auparavant une rotation .right CODÉE EN DUR, une hypothèse valable uniquement pour nos
+        // propres enregistrements LIVE (ARKit délivre toujours un buffer paysage natif, quelle que
+        // soit l'orientation de l'appareil — voir `CGImage.from(pixelBuffer:)`, où cette même hypothèse
+        // EST correcte). Une vidéo importée depuis la bibliothèque peut avoir n'importe quel
+        // `preferredTransform` selon l'appareil/l'app qui l'a filmée — appliquer la mauvaise rotation
+        // produit une image dont les dimensions ne correspondent plus au buffer de sortie attendu par
+        // `renderContext`/`ciContext.render(to:)`, provoquant un plantage plutôt qu'une simple image
+        // de travers.
+        let orientation = Self.cgOrientation(for: videoTrack.preferredTransform)
+        let isRotated90 = orientation == .left || orientation == .right
+
         let composition = AVMutableVideoComposition()
-        // Le compositeur personnalisé ci-dessous pivote lui-même chaque image (voir `startRequest`),
-        // donc la taille de rendu est directement la taille portrait (dimensions inversées).
         let naturalSize = videoTrack.naturalSize
-        composition.renderSize = CGSize(width: naturalSize.height, height: naturalSize.width)
+        composition.renderSize = isRotated90
+            ? CGSize(width: naturalSize.height, height: naturalSize.width)
+            : naturalSize
         composition.frameDuration = CMTime(value: 1, timescale: 30)
         composition.customVideoCompositorClass = VideoOverlayCompositor.self
 
         let instruction = OverlayVideoCompositionInstruction(
             sourceTrackID: videoTrack.trackID,
             timeRange: CMTimeRange(start: .zero, duration: asset.duration),
-            session: session
+            session: session,
+            sourceOrientation: orientation
         )
         composition.instructions = [instruction]
 
@@ -147,10 +162,11 @@ enum OverlayRenderer {
                 return
             }
 
-            // Même correction d'orientation que `CGImage.from(pixelBuffer:)` : le buffer source est
-            // le paysage natif ARKit non transformé (les compositeurs personnalisés reçoivent les
-            // images brutes, sans le `preferredTransform` de la piste).
-            let sourceImage = CIImage(cvPixelBuffer: sourceBuffer).oriented(.right)
+            // Les compositeurs personnalisés reçoivent le buffer brut de la piste, SANS que son
+            // `preferredTransform` soit appliqué automatiquement — on le fait nous-même ici, avec
+            // l'orientation réelle de CETTE piste (calculée dans `exportVideoWithOverlays`), pas une
+            // rotation supposée fixe (voir le commentaire à ce point d'appel pour le bug que ça corrige).
+            let sourceImage = CIImage(cvPixelBuffer: sourceBuffer).oriented(instruction.sourceOrientation)
             guard let sourceCGImage = ciContext.createCGImage(sourceImage, from: sourceImage.extent) else {
                 asyncVideoCompositionRequest.finish(withComposedVideoFrame: sourceBuffer)
                 return
@@ -163,6 +179,19 @@ enum OverlayRenderer {
         }
 
         func cancelAllPendingVideoCompositionRequests() {}
+    }
+
+    /// Convertit le `preferredTransform` d'une piste vidéo (rotation pure, cas quasi systématique en
+    /// pratique — pas de cisaillement) en l'orientation `CIImage.oriented(_:)` correspondante, pour
+    /// afficher le buffer brut de la piste dans le bon sens quelle que soit sa source (ARKit ou
+    /// bibliothèque). Voir le commentaire dans `exportVideoWithOverlays` pour le bug que ça corrige.
+    private static func cgOrientation(for transform: CGAffineTransform) -> CGImagePropertyOrientation {
+        let angle = atan2(transform.b, transform.a)
+        let tolerance = 0.1
+        if abs(angle - .pi / 2) < tolerance { return .right }        // rotation 90° horaire
+        if abs(angle + .pi / 2) < tolerance { return .left }         // rotation 90° antihoraire
+        if abs(abs(angle) - .pi) < tolerance { return .down }        // rotation 180°
+        return .up                                                    // pas de rotation (paysage tel quel)
     }
 
     // MARK: - Détail du dessin
@@ -225,12 +254,16 @@ final class OverlayVideoCompositionInstruction: NSObject, AVVideoCompositionInst
 
     let sourceTrackID: CMPersistentTrackID
     let session: AnalysisSession
+    /// Orientation réelle de la piste source (voir `OverlayRenderer.cgOrientation(for:)`), appliquée
+    /// image par image dans `VideoOverlayCompositor.startRequest`.
+    let sourceOrientation: CGImagePropertyOrientation
 
-    init(sourceTrackID: CMPersistentTrackID, timeRange: CMTimeRange, session: AnalysisSession) {
+    init(sourceTrackID: CMPersistentTrackID, timeRange: CMTimeRange, session: AnalysisSession, sourceOrientation: CGImagePropertyOrientation) {
         self.sourceTrackID = sourceTrackID
         self.timeRange = timeRange
         self.requiredSourceTrackIDs = [NSNumber(value: sourceTrackID)]
         self.session = session
+        self.sourceOrientation = sourceOrientation
     }
 }
 

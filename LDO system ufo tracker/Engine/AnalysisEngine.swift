@@ -58,6 +58,15 @@ struct AnalysisSession: Identifiable, Equatable {
     var estimatedAltitudeMeters: Double?
     var distanceConfidence: Double = 0       // faible, car estimée par triangulation, pas mesurée
     var distanceMethod: String = ""
+    /// `true`/`false` si la distance par taille supposée a pu être recoupée avec la vitesse réelle
+    /// typique du type détecté (voir `DistanceEstimator`) ; `nil` si le recoupement ne s'applique pas.
+    var distanceCrossCheckAgrees: Bool? = nil
+    /// Nom de l'astre connu (Vénus, Jupiter, Lune, Soleil, ou une étoile fixe brillante) dont la
+    /// position calculée correspond à la direction observée, dans la tolérance retenue — voir
+    /// `CelestialPositionCalculator`/`AnalysisEngine`. `nil` si aucune correspondance (ou recoupement
+    /// non applicable, ex. vidéo importée sans position GPS ni boussole).
+    var matchedCelestialBody: String? = nil
+    var celestialMatchSeparationDegrees: Double? = nil
 
     var timestamp: Date = Date()
 
@@ -151,13 +160,24 @@ final class AnalysisEngine {
         session.known3DModelURL = shapeClassifier.buildApproximate3DSilhouette(luminousRegion: shape.luminousRegion)
 
         report(2, "Estimation de la distance…")
+        // Passe préliminaire : vitesse angulaire (degrés/seconde) SEULE, sans distance — purement
+        // géométrique (voir TrajectoryCalculator.angularVelocity), donc calculable avant même
+        // d'avoir une distance. Sert à recouper la distance par taille supposée ci-dessous avec une
+        // deuxième méthode indépendante (voir le commentaire dans DistanceEstimator). La trajectoire
+        // complète (avec forces G) est recalculée à l'étape 4 une fois la distance réconciliée connue.
+        let preliminaryTrajectory = trajectoryCalculator.computeTrajectory(detections: detections, frames: frames, estimatedDistanceMeters: nil)
+        let averageAngularVelocity = preliminaryTrajectory.angularVelocitiesDegPerS.isEmpty ? nil :
+            preliminaryTrajectory.angularVelocitiesDegPerS.map { $0.value }.reduce(0, +) / Double(preliminaryTrajectory.angularVelocitiesDegPerS.count)
+
         // Étape 8 (avancée ici, voir DistanceEstimator.swift) : triangulation angulaire à partir
-        // d'une taille réelle supposée selon la forme détectée (pas de LiDAR, portée trop courte).
-        let dist = distanceEstimator.estimateDistanceAndAltitude(detections: detections, frames: frames, shapeLabel: shape.label)
+        // d'une taille réelle supposée selon la forme détectée (pas de LiDAR, portée trop courte),
+        // recoupée avec la vitesse réelle typique du type détecté quand c'est possible.
+        let dist = distanceEstimator.estimateDistanceAndAltitude(detections: detections, frames: frames, shapeLabel: shape.label, averageAngularVelocityDegPerS: averageAngularVelocity)
         session.estimatedDistanceMeters = dist.distanceMeters
         session.estimatedAltitudeMeters = dist.altitudeMeters
         session.distanceConfidence = dist.confidence
         session.distanceMethod = dist.method
+        session.distanceCrossCheckAgrees = dist.crossCheckAgrees
         // BUG CORRIGÉ : le seuil était `> 0.3` alors que `DistanceEstimator.confidence` ne dépasse
         // jamais 0.3 (0.15 pour une forme non identifiée, 0.3 au mieux pour une forme identifiée) —
         // la vitesse et les forces G étaient donc TOUJOURS "non calculables", peu importe la qualité
@@ -180,6 +200,31 @@ final class AnalysisEngine {
         session.curvatureEvents = traj.curvatureEvents
         session.isZigzagTrajectory = traj.isZigzagPattern
         session.trajectoryReversalCount = traj.directionReversalCount
+
+        // Recoupement astre connu (Soleil, Lune, Vénus, Jupiter, étoiles fixes brillantes) — demande
+        // explicite de Jean-David (2026-08-09) : distinguer un vrai OVNI stationnaire d'une étoile ou
+        // planète brillante (Vénus est la cause n°1 de signalements dans le monde). Nécessite la
+        // position GPS ET la direction réelle observée (boussole ARKit, voir
+        // TrajectoryCalculator.observedAzimuthElevation) — absentes toutes les deux pour une vidéo
+        // importée de la bibliothèque, dans quel cas ce recoupement est simplement ignoré (nil).
+        if let captureLocation, let observed = trajectoryCalculator.observedAzimuthElevation(detections: detections, frames: frames) {
+            let candidates = CelestialPositionCalculator.visiblePositions(at: session.timestamp, latitude: captureLocation.lat, longitude: captureLocation.lon)
+            // Tolérance volontairement large (12°) : cumul de l'imprécision de la boussole ARKit (peut
+            // dériver de plusieurs degrés, surtout près d'interférences magnétiques) et de la précision
+            // des formules orbitales à basse précision utilisées ci-dessus (~1°) — mieux vaut manquer
+            // une vraie correspondance que d'en affirmer une fausse à tort.
+            let matchToleranceDegrees = 12.0
+            if let closest = candidates.min(by: {
+                angularSeparationDegrees(az1: observed.azimuthDegrees, el1: observed.elevationDegrees, az2: $0.azimuthDegrees, el2: $0.elevationDegrees)
+                < angularSeparationDegrees(az1: observed.azimuthDegrees, el1: observed.elevationDegrees, az2: $1.azimuthDegrees, el2: $1.elevationDegrees)
+            }) {
+                let separation = angularSeparationDegrees(az1: observed.azimuthDegrees, el1: observed.elevationDegrees, az2: closest.azimuthDegrees, el2: closest.elevationDegrees)
+                if separation <= matchToleranceDegrees {
+                    session.matchedCelestialBody = closest.name
+                    session.celestialMatchSeparationDegrees = separation
+                }
+            }
+        }
 
         report(4, "Analyse de l'illumination…")
         // Étape 5 : illumination et couleur (voir IlluminationAnalyzer.swift), échantillonnée sur
@@ -244,6 +289,19 @@ final class AnalysisEngine {
 
         report(9, "Terminé")
         return session
+    }
+
+    /// Distance angulaire (degrés) entre deux directions données en azimut/élévation — via leurs
+    /// vecteurs unitaires, pas une simple différence de coordonnées (fausse près du zénith où
+    /// l'azimut perd sa signification). Utilisée pour comparer la direction observée à la position
+    /// calculée d'un astre connu (voir `CelestialPositionCalculator`).
+    private func angularSeparationDegrees(az1: Double, el1: Double, az2: Double, el2: Double) -> Double {
+        let az1Rad = az1 * .pi / 180, el1Rad = el1 * .pi / 180
+        let az2Rad = az2 * .pi / 180, el2Rad = el2 * .pi / 180
+        let x1 = cos(el1Rad) * sin(az1Rad), y1 = cos(el1Rad) * cos(az1Rad), z1 = sin(el1Rad)
+        let x2 = cos(el2Rad) * sin(az2Rad), y2 = cos(el2Rad) * cos(az2Rad), z2 = sin(el2Rad)
+        let dot = max(-1, min(1, x1 * x2 + y1 * y2 + z1 * z2))
+        return acos(dot) * 180 / .pi
     }
 
     /// Distance moyenne entre les détections d'un objet suivi et un point de référence (repère
