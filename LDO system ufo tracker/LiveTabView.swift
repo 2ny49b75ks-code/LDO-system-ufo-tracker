@@ -134,10 +134,24 @@ struct LiveTabView: View {
         let zoomFraction = zoomRange > 0 ? (capture.zoomFactor - CaptureManager.minZoomFactor) / zoomRange : 0
         let thumbOffset = -((zoomFraction - 0.5) * zoomRailHeight)
 
+        // Pas de bornes atteintes -> pas de changement, `step` protège aussi contre un
+        // débordement au-delà de min/maxZoomFactor.
+        func step(by delta: CGFloat) {
+            capture.zoomFactor = min(max(capture.zoomFactor + delta, CaptureManager.minZoomFactor), CaptureManager.maxZoomFactor)
+            zoomAtButtonDragStart = capture.zoomFactor
+        }
+
         return VStack(spacing: 10) {
-            Image(systemName: "plus.magnifyingglass")
-                .font(.caption)
-                .foregroundColor(.white.opacity(0.85))
+            // BUG CORRIGÉ : ces icônes n'étaient que des `Image` statiques, sans geste attaché —
+            // les toucher ne faisait rien du tout, ce que Jean-David a signalé comme « le bouton
+            // zoom ne fonctionne pas ». Ce sont maintenant de vrais boutons (±0,5× par tapotement),
+            // en plus du glisser sur le rail ci-dessous qui continue de fonctionner.
+            Button { step(by: 0.5) } label: {
+                Image(systemName: "plus.magnifyingglass")
+                    .font(.caption)
+                    .foregroundColor(.white.opacity(0.85))
+                    .frame(width: 32, height: 24)
+            }
 
             ZStack(alignment: .center) {
                 Capsule()
@@ -151,9 +165,12 @@ struct LiveTabView: View {
             }
             .frame(height: zoomRailHeight)
 
-            Image(systemName: "minus.magnifyingglass")
-                .font(.caption)
-                .foregroundColor(.white.opacity(0.85))
+            Button { step(by: -0.5) } label: {
+                Image(systemName: "minus.magnifyingglass")
+                    .font(.caption)
+                    .foregroundColor(.white.opacity(0.85))
+                    .frame(width: 32, height: 24)
+            }
         }
         .padding(.vertical, 10)
         .padding(.horizontal, 8)
