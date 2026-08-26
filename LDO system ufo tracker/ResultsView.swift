@@ -234,6 +234,10 @@ struct CaptureLocationMapView: View {
 extension Color {
     /// Vert signature LDO (#39FF14), utilisé partout dans l'app et le site web.
     static let ldoSignal = Color(red: Double(0x39) / 255, green: Double(0xFF) / 255, blue: Double(0x14) / 255)
+    /// Mauve clair de la marque LDO (#5B1A8C — `--nebula-light` sur le site web), utilisé pour le
+    /// cadre autour du viseur en mode capture (voir LiveTabView) : plus visible que le mauve foncé
+    /// `--nebula` (#3B0A5E) sur un fond de caméra, tout en restant la teinte exacte de la marque.
+    static let ldoNebulaLight = Color(red: Double(0x5B) / 255, green: Double(0x1A) / 255, blue: Double(0x8C) / 255)
 }
 
 /// Vue MapKit affichant la trajectoire (vue aérienne) sous forme de polyligne rouge.

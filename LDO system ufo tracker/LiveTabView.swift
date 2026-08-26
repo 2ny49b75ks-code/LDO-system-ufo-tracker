@@ -39,16 +39,16 @@ struct LiveTabView: View {
                         }
                 )
 
-            // Cadre mauve autour du viseur pendant l'enregistrement — demande explicite de
-            // Jean-David (2026-08-25) : signal visuel clair, distinct du bouton soucoupe rouge, qu'une
-            // capture est en cours. `allowsHitTesting(false)` : purement visuel, ne doit jamais
-            // intercepter les gestes de zoom/toucher sur le viseur en-dessous.
-            if capture.isRecording {
-                RoundedRectangle(cornerRadius: 0)
-                    .stroke(Color.purple, lineWidth: 6)
-                    .ignoresSafeArea()
-                    .allowsHitTesting(false)
-            }
+            // Cadre mauve autour du viseur — demande explicite de Jean-David (2026-08-25, ajustée
+            // 2026-08-07) : toujours visible dans la section capture (avant ET pendant
+            // l'enregistrement), pas seulement pendant, et à la couleur mauve exacte de la marque LDO
+            // (--nebula-light du site web) plutôt que le mauve système générique. `allowsHitTesting
+            // (false)` : purement visuel, ne doit jamais intercepter les gestes de zoom/toucher sur le
+            // viseur en-dessous.
+            RoundedRectangle(cornerRadius: 0)
+                .stroke(Color.ldoNebulaLight, lineWidth: 6)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
 
             // Bouton de zoom vertical dédié, sur le bord droit de l'écran — demande explicite de
             // Jean-David (2026-08-25) : alternative au pincement, glisser le doigt vers le haut sur ce
