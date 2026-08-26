@@ -63,6 +63,37 @@ final class VerdictCalculator {
             )
         }
 
+        // 0bis. Sur-priorité, même principe que la règle 0 ci-dessus mais fondée sur la VITESSE plutôt
+        //    que la forme : demande explicite de Jean-David (2026-08-25) — si l'analyse de vitesse
+        //    conclut elle-même à une plage compatible avec un aéronef connu (drone/oiseau, avion léger,
+        //    avion de ligne — PAS "supérieur à un F-35"), et qu'aucun autre signal indépendant ne
+        //    contredit cette conclusion (pas de virage brusque impliquant une G impossible, pas
+        //    d'accélération soutenue défiant la physique, pas de trajectoire en zigzag), alors TOUS les
+        //    signaux disponibles pointent vers un objet connu : la possibilité OVNI doit être 0%, pas
+        //    seulement réduite par un score pondéré. Un verdict "OVNI possible" n'est permis que si
+        //    TOUTES les analyses (vitesse, direction, forme, son) échouent à correspondre à un objet
+        //    connu (avion, satellite, météore, oiseau, insecte) — pas seulement certaines d'entre elles.
+        //    Exclut explicitement le cas stationnaire (`speedIsStationary`) : un objet immobile qui
+        //    scintille irrégulièrement reste un candidat OVNI stationnaire légitime (voir les règles
+        //    Mode Nuit plus bas) — l'absence de vitesse mesurable n'est pas en soi une identification.
+        //    Exclut aussi un désaccord de recoupement de distance (`distanceCrossCheckAgrees == false`,
+        //    même garde que la règle 0 ci-dessus) : un objet dont la distance déduite de sa taille
+        //    supposée ne concorde pas avec sa vitesse réelle typique ne se comporte pas comme un
+        //    membre ordinaire de sa catégorie, même si sa vitesse mesurée tombe dans une plage connue.
+        if session.speedConfidence > 0,
+           !session.speedIsStationary,
+           session.distanceCrossCheckAgrees != false,
+           session.maxSpeedKmh < 2 * f35MaxSpeedKmh,
+           !session.isZigzagTrajectory,
+           !session.hasImpossibleGForce,
+           !session.speedDefiesPhysics {
+            return VerdictResult(
+                label: "Probablement identifié (objet connu)",
+                percent: 0,
+                factors: ["Vitesse mesurée (~\(Int(session.maxSpeedKmh)) km/h) et trajectoire cohérentes avec un objet connu : \(session.speedComparisonLabel) — aucun signal indépendant (virage, accélération, zigzag) ne contredit cette conclusion"]
+            )
+        }
+
         var score = 0.0
         var factors: [String] = []
 

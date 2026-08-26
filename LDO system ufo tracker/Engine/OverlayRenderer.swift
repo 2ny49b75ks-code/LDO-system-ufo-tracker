@@ -125,9 +125,19 @@ enum OverlayRenderer {
 
         let composition = AVMutableVideoComposition()
         let naturalSize = videoTrack.naturalSize
-        composition.renderSize = isRotated90
+        let uprightSize = isRotated90
             ? CGSize(width: naturalSize.height, height: naturalSize.width)
             : naturalSize
+        // Plafond de résolution (2026-08-25, durcissement préventif, même raisonnement que le
+        // plafond déjà en place dans `VideoFrameExtractor` pour l'extraction d'images d'analyse) :
+        // contrairement aux images d'analyse, CETTE fonction réencode la vidéo COMPLÈTE (pas
+        // seulement l'extrait de 4s choisi, voir `timeRange` ci-dessous), image par image, à travers
+        // un compositeur personnalisé (rendu Core Image par image). Sans plafond, un enregistrement
+        // HD/4K prolongé multiplie le risque déjà documenté de fermeture forcée par iOS pour pression
+        // mémoire pendant cette étape.
+        let maxRenderDimension: CGFloat = 1920
+        let renderScale = min(1.0, maxRenderDimension / max(uprightSize.width, uprightSize.height, 1))
+        composition.renderSize = CGSize(width: uprightSize.width * renderScale, height: uprightSize.height * renderScale)
         composition.frameDuration = CMTime(value: 1, timescale: 30)
         composition.customVideoCompositorClass = VideoOverlayCompositor.self
 

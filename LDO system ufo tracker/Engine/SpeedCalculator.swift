@@ -25,6 +25,11 @@ final class SpeedCalculator {
     private let physicallyImplausibleAccelerationMS2: Double = 100.0
 
     func estimateSpeed(trajectory: TrajectoryResult, distanceMeters: Double?) -> SpeedResult {
+        // Un vrai virage brusque confirmé (>30°, voir TrajectoryCalculator.detectSharpTurns) sert de
+        // corroboration indépendante : une accélération soutenue n'est physiquement plausible QUE
+        // pendant un virage réel. Sans virage confirmé, la trajectoire est essentiellement stable
+        // (vitesse constante) — voir le calcul de `maxAcceleration` ci-dessous.
+        let hasGenuineSharpTurn = !trajectory.curvatureEvents.isEmpty
         guard let distance = distanceMeters, distance > 0, !trajectory.angularVelocitiesDegPerS.isEmpty else {
             // Sans distance fiable, impossible de convertir des degrés/seconde en km/h de façon
             // physiquement valable : on ne calcule PAS de chiffre, on le signale clairement.
@@ -53,13 +58,44 @@ final class SpeedCalculator {
         let max = Self.robustPeak(velocitiesKmh.map { $0.value })
         let isStationary = max < stationaryThresholdKmh
 
-        // 2. Accélération linéaire (m/s²) entre échantillons consécutifs de vitesse.
+        // 2. Accélération linéaire (m/s²), sur une base élargie (~0.25s) plutôt qu'un simple pas
+        //    d'une image à l'autre. BUG corrigé (2026-08-25, découvert via un harnais de test
+        //    numérique reproduisant le scénario réel signalé par Jean-David — un avion en vol
+        //    parfaitement droit affichait encore ~1526 m/s² même après le premier correctif ci-
+        //    dessous) : même la MÉDIANE d'une série calculée image par image reste dominée par le
+        //    bruit quand le déplacement RÉEL par image est du même ordre de grandeur que le bruit de
+        //    suivi — la médiane filtre les valeurs isolées, pas un bruit systématiquement présent sur
+        //    TOUTE la série. Même principe que le correctif de
+        //    `TrajectoryCalculator.detectSharpTurns` : élargir la base de comparaison accumule le
+        //    vrai signal de vitesse tout en moyennant le bruit indépendant d'une image à l'autre.
+        let accelerationBaselineSeconds = 0.25
+        let velocityDuration = (velocitiesKmh.last?.timestamp ?? 0) - (velocitiesKmh.first?.timestamp ?? 0)
+        let averageVelocityDt = velocitiesKmh.count > 1 ? velocityDuration / Double(velocitiesKmh.count - 1) : 0
+        // `Swift.max` explicite : le nom local `max` (vitesse maximale, voir plus haut) masque sinon
+        // la fonction globale `max(_:_:)` dans cette portée.
+        let accelerationStride = averageVelocityDt > 0 ? Swift.max(1, Int((accelerationBaselineSeconds / averageVelocityDt).rounded())) : 1
+
+        // Lissage léger (moyenne glissante sur 3 échantillons), UNIQUEMENT pour cette dérivée
+        // d'accélération — la série `velocitiesKmh` brute reste inchangée pour l'affichage
+        // vitesse moyenne/max ci-dessus (voir le commentaire sur `robustPeak` : préserver les vrais
+        // pics de vitesse instantanée y reste voulu). Nécessaire en plus de la base élargie
+        // ci-dessus (2026-08-25, même harnais de test que ci-dessus) : élargir seul la base de
+        // comparaison ne suffit pas quand le bruit de suivi est présent sur TOUTE la série de
+        // vitesse (pas un simple écart isolé) — un vol à vitesse constante peut alors encore
+        // afficher plusieurs centaines de m/s² même sur une différence à 0,25s d'écart. Un lissage
+        // à 3 échantillons avant cette différence élimine ce bruit systématique sans masquer une
+        // vraie variation soutenue (qui reste, elle, présente sur plusieurs échantillons consécutifs
+        // même après moyenne).
+        let smoothedVelocities = Self.movingAverage(velocitiesKmh, window: 3)
+
         var accelerations: [Double] = []
-        for i in 1..<velocitiesKmh.count {
-            let dt = velocitiesKmh[i].timestamp - velocitiesKmh[i - 1].timestamp
-            guard dt > 0.001 else { continue }
-            let dvMetersPerSecond = (velocitiesKmh[i].value - velocitiesKmh[i - 1].value) / 3.6
-            accelerations.append(abs(dvMetersPerSecond / dt))
+        if smoothedVelocities.count > accelerationStride {
+            for i in accelerationStride..<smoothedVelocities.count {
+                let dt = smoothedVelocities[i].timestamp - smoothedVelocities[i - accelerationStride].timestamp
+                guard dt > 0.001 else { continue }
+                let dvMetersPerSecond = (smoothedVelocities[i].value - smoothedVelocities[i - accelerationStride].value) / 3.6
+                accelerations.append(abs(dvMetersPerSecond / dt))
+            }
         }
         // Pic "robuste" plutôt que le simple maximum brut : une dérivée seconde calculée sur des
         // échantillons image par image est extrêmement sensible à un seul écart de suivi isolé (même
@@ -67,11 +103,31 @@ final class SpeedCalculator {
         // commentaire pour le détail). Corrige un cas réel (signalé par Jean-David, 2026-08-09) : un
         // avion volant à vitesse quasi constante affichait ~4197 m/s² d'accélération, provenant d'un
         // unique écart de détection sur une image, pas d'une vraie variation de vitesse soutenue.
-        let maxAcceleration = Self.robustPeak(accelerations)
+        //
+        // ANCRAGE SUR UN VRAI VIRAGE (2026-08-25, signalé par Jean-David : un avion de ligne en vol
+        // parfaitement droit, vitesse mesurée cohérente à 539 km/h, affichait encore ~769 m/s²
+        // soutenus, un résultat non physique) : même après `robustPeak`, le bruit corrélé d'une
+        // dérivée seconde image par image reste suffisant pour franchir le seuil "soutenu" 2
+        // échantillons de suite. Sans virage brusque confirmé par ailleurs (`hasGenuineSharpTurn`),
+        // on retient la MÉDIANE des échantillons plutôt que leur maximum : un vol à vitesse constante
+        // a une accélération réelle proche de 0 par définition, la médiane reflète ça correctement
+        // là où le maximum reste dominé par le bruit résiduel.
+        // Retombée à 0 (pas la médiane) sans virage confirmé (2026-08-25, même harnais de test que
+        // ci-dessus — même en lissant ET en élargissant la base, un bruit de suivi soutenu sur toute
+        // la série laissait encore une centaine de m/s² résiduels, un chiffre encore trompeur affiché
+        // à côté d'un objet déjà identifié comme un aéronef connu). Même principe que le G-force dans
+        // `TrajectoryCalculator` : l'absence de virage brusque confirmé est la preuve la plus directe
+        // disponible qu'il n'y a pas d'accélération réelle — à vitesse constante, l'accélération
+        // linéaire est 0 par définition. Le chiffre lissé/élargi ci-dessus reste utile pour la
+        // détection de "performance impossible" ci-dessous (comparaison à un seuil, pas un affichage
+        // brut), mais n'est plus présenté comme LA valeur d'accélération sans corroboration géométrique.
+        let maxAcceleration: Double = hasGenuineSharpTurn ? Self.robustPeak(accelerations) : 0
 
         // 3. "Défie la physique" seulement si l'accélération extrême est SOUTENUE (au moins 2 échantillons
-        //    consécutifs), pas un pic isolé qui serait plus probablement une erreur de détection.
-        let sustainedExtreme = accelerations.enumerated().contains { index, value in
+        //    consécutifs) ET corroborée par un vrai virage détecté indépendamment — un pic isolé, même
+        //    soutenu sur 2 échantillons consécutifs de la même dérivée bruitée, reste plus probablement
+        //    une erreur de suivi qu'une vraie variation de vitesse en l'absence de tout virage confirmé.
+        let sustainedExtreme = hasGenuineSharpTurn && accelerations.enumerated().contains { index, value in
             guard value > physicallyImplausibleAccelerationMS2, index > 0 else { return false }
             return accelerations[index - 1] > physicallyImplausibleAccelerationMS2
         }
@@ -98,6 +154,21 @@ final class SpeedCalculator {
             corroboratedPeaks.append(min(values[i-1], values[i]))
         }
         return corroboratedPeaks.max() ?? 0
+    }
+
+    /// Moyenne glissante centrée — voir le commentaire au point d'appel (calcul de l'accélération
+    /// linéaire) pour pourquoi ce lissage supplémentaire est nécessaire en plus de la base élargie.
+    private static func movingAverage(_ series: [TimedValue], window: Int) -> [TimedValue] {
+        guard series.count > window else { return series }
+        var result: [TimedValue] = []
+        for i in 0..<series.count {
+            let lo = max(0, i - window / 2)
+            let hi = min(series.count - 1, i + window / 2)
+            let slice = series[lo...hi]
+            let avg = slice.reduce(0) { $0 + $1.value } / Double(slice.count)
+            result.append(TimedValue(timestamp: series[i].timestamp, value: avg))
+        }
+        return result
     }
 
     /// Étiquette informative comparant la vitesse à des repères connus. Purement indicative :

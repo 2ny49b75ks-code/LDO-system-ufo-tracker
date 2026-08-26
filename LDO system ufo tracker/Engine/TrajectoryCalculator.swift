@@ -65,18 +65,32 @@ final class TrajectoryCalculator {
         let maxAngularAcceleration = robustPeak(angularAcceleration)
 
         // 5. Détection des changements de direction brusques (virages) par courbure locale — aussi
-        //    sur les échantillons bruts, pour la même raison.
+        //    sur les échantillons bruts, pour la même raison. Calculé ici (avant l'estimation des
+        //    forces G ci-dessous) pour pouvoir ancrer le G final sur un vrai virage plutôt que sur le
+        //    bruit image par image.
         let curvatureEvents = detectSharpTurns(angularSamples, distanceMeters: estimatedDistanceMeters)
 
-        // 6. Estimation des forces G.
-        //    - Si une distance est disponible : accélération latérale réelle ≈ distance × accélération angulaire (rad/s²)
-        //      (valide pour un mouvement perpendiculaire à la ligne de visée, cas le plus fréquent en observation).
-        //    - Sinon : on NE PRÉTEND PAS connaître de valeur en G ; on ne signale qu'un comportement
-        //      angulaire "extrême" à titre qualitatif, avec confiance nulle sur la valeur en G elle-même.
-        let gResult = estimateGForce(
-            maxAngularAccelerationDegPerS2: maxAngularAcceleration,
-            distanceMeters: estimatedDistanceMeters
-        )
+        // 6. Estimation des forces G — ANCRÉE SUR LES VIRAGES RÉELLEMENT DÉTECTÉS (`curvatureEvents`
+        //    ci-dessus, seuil >30° sur une fenêtre de 3 échantillons), PAS sur le pic brut de la double
+        //    dérivée image par image (`maxAngularAcceleration`, voir `robustPeak`).
+        //    BUG corrigé (2026-08-25, signalé par Jean-David sur un avion de ligne réel, vitesse
+        //    mesurée cohérente à 539 km/h) : un avion volant en ligne droite affichait ~78,5 G. Cause :
+        //    la double dérivée image par image reste bruitée même après corroboration par paire (le
+        //    filtre `robustPeak` ne suffit pas — des échantillons consécutifs d'une dérivée seconde
+        //    partagent un terme commun, donc le bruit s'y corrèle). Multiplié par une distance estimée
+        //    de plusieurs kilomètres, un bruit angulaire infime devient des centaines de m/s² fictifs.
+        //    Un virage confirmé par `detectSharpTurns` (>30° sur 3 points, un vrai signal géométrique,
+        //    pas une simple dérivée seconde) est une mesure bien plus robuste. Sans virage confirmé, le
+        //    vol est essentiellement stable : on retombe sur 1 G (charge de vol en palier), la valeur
+        //    physiquement correcte — pas sur un chiffre dérivé du bruit de suivi.
+        let gResult: (value: Double, confidence: Double)
+        if let strongestTurn = curvatureEvents.max(by: { $0.estimatedGForce < $1.estimatedGForce }) {
+            gResult = (strongestTurn.estimatedGForce, estimatedDistanceMeters != nil ? 0.35 : 0)
+        } else if let distance = estimatedDistanceMeters, distance > 0 {
+            gResult = (1.0, 0.5)   // aucun virage brusque confirmé : vol en palier, charge ≈ 1 G.
+        } else {
+            gResult = (0, 0)       // pas de distance fiable : on ne prétend aucune valeur en G.
+        }
 
         // 7. Points 2D (pixels) pour le tracé rouge sur la vidéo/les photos.
         let points2D = detections.map { center($0.boundingBox) }
@@ -93,7 +107,7 @@ final class TrajectoryCalculator {
         //    Utilise maintenant la même projection angulaire réelle (corrigée de la pose caméra) que
         //    la linéarité, sur les échantillons BRUTS (non lissés, comme les virages/vitesse ci-dessus)
         //    pour ne pas non plus écraser un vrai zigzag brusque.
-        let zigzag = detectZigzagPattern(angularScreenProjection(angularSamples))
+        let zigzag = detectZigzagPattern(angularSamples)
 
         return TrajectoryResult(
             points2D: points2D,
@@ -213,7 +227,13 @@ final class TrajectoryCalculator {
         }
         let averageDeviation = totalDeviation / Double(max(samples.count, 1))
         let r2 = max(0, 1 - averageDeviation * 50) // mise à l'échelle empirique (angles unitaires, petits écarts)
-        return (r2 > 0.97, r2)
+        // Seuil assoupli de 0.97 à 0.85 (2026-08-25, signalé par Jean-David sur un avion de ligne
+        // réel filmé à main levée, R² = 0.91) : 0.97 exigeait une trajectoire quasiment parfaite,
+        // plus stricte que ce qu'un suivi à main levée peut produire même pour un vol parfaitement
+        // droit — le moindre tremblement de main faisait basculer un avion en vol rectiligne vers
+        // "trajectoire asymétrique / changements brusques", contredisant le reste de l'analyse
+        // (vitesse cohérente avec un avion de ligne, aucun virage brusque réellement détecté).
+        return (r2 > 0.85, r2)
     }
 
     // MARK: - 4. Vitesse et accélération angulaires
@@ -267,21 +287,43 @@ final class TrajectoryCalculator {
 
     // MARK: - 5. Virages brusques
 
+    /// Base de comparaison (secondes) pour les vecteurs de déplacement `v1`/`v2` ci-dessous, PAS un
+    /// simple pas d'une image à l'autre. BUG corrigé (2026-08-25, découvert via un harnais de test
+    /// numérique reproduisant le scénario réel signalé par Jean-David : un avion de ligne à ~7 km,
+    /// vitesse mesurée correcte à 539 km/h, déclenchait encore ~13 600 G après un premier correctif
+    /// qui ancrait pourtant déjà le G sur ces "virages") : comparer deux échantillons consécutifs
+    /// (~1/12s d'écart) rend `angleBetween(v1,v2)` extrêmement instable dès que le déplacement RÉEL
+    /// par image est du même ordre de grandeur que le bruit de suivi — cas typique d'un objet
+    /// lointain qui bouge lentement à l'écran malgré une vraie vitesse élevée (justement le cas d'un
+    /// avion de ligne à plusieurs km). Le bruit de détection d'une image à l'autre suffisait alors à
+    /// produire des "virages" fantômes de plus de 30°, même sur une trajectoire globalement quasi
+    /// parfaite (R² > 0.97). Élargir la base à ~0.25s accumule le vrai signal de déplacement tout en
+    /// moyennant le bruit indépendant d'une image à l'autre — un vrai virage brusque (le genre de
+    /// changement de direction qui définit un comportement de vol atypique) reste largement détecté
+    /// sur cette fenêtre ; un jitter de suivi ne l'est plus.
+    private let curvatureBaselineSeconds: Double = 0.25
+
     private func detectSharpTurns(_ samples: [AngularSample], distanceMeters: Double?) -> [CurvatureEvent] {
         guard samples.count >= 3 else { return [] }
-        var events: [CurvatureEvent] = []
 
-        for i in 1..<(samples.count - 1) {
-            let v1 = samples[i].direction - samples[i-1].direction
-            let v2 = samples[i+1].direction - samples[i].direction
+        let totalDuration = (samples.last?.timestamp ?? 0) - (samples.first?.timestamp ?? 0)
+        let averageDt = samples.count > 1 ? totalDuration / Double(samples.count - 1) : 0
+        let strideCount = averageDt > 0 ? max(1, Int((curvatureBaselineSeconds / averageDt).rounded())) : 1
+        guard samples.count > 2 * strideCount else { return [] }
+
+        var events: [CurvatureEvent] = []
+        for i in strideCount..<(samples.count - strideCount) {
+            let v1 = samples[i].direction - samples[i - strideCount].direction
+            let v2 = samples[i + strideCount].direction - samples[i].direction
             guard simd_length(v1) > 0.0001, simd_length(v2) > 0.0001 else { continue }
             let turnAngleRad = angleBetween(v1, v2)
             let turnAngleDeg = turnAngleRad * 180 / .pi
 
-            // Un virage "brusque" : plus de 30° de changement de direction entre deux segments courts.
+            // Un virage "brusque" : plus de 30° de changement de direction entre deux segments,
+            // mesurés sur la base élargie ci-dessus (pas un simple pas d'une image à l'autre).
             guard turnAngleDeg > 30 else { continue }
 
-            let dt = samples[i+1].timestamp - samples[i-1].timestamp
+            let dt = samples[i + strideCount].timestamp - samples[i - strideCount].timestamp
             let gEstimate = estimateGForce(
                 maxAngularAccelerationDegPerS2: dt > 0 ? turnAngleDeg / dt : 0,
                 distanceMeters: distanceMeters
@@ -355,17 +397,32 @@ final class TrajectoryCalculator {
     /// irrégulière (déjà couverte par le R² de linéarité) : ici on regarde spécifiquement si les
     /// virages successifs CHANGENT DE SENS, plutôt que de courber continuellement dans une seule
     /// direction (ce que ferait un avion, un drone ou un satellite en virage).
-    private func detectZigzagPattern(_ points: [CGPoint]) -> (isZigzag: Bool, reversalCount: Int) {
+    private func detectZigzagPattern(_ samples: [AngularSample]) -> (isZigzag: Bool, reversalCount: Int) {
+        let points = angularScreenProjection(samples)
         guard points.count >= 4 else { return (false, 0) }
 
         // Seuil minimal pour qu'un changement de direction compte comme un vrai "virage" et non
         // du bruit de détection pixel par pixel.
         let minTurnDegrees: Double = 12
 
+        // Base de comparaison élargie (~0.25s), PAS un simple pas d'une image à l'autre — même bug
+        // et même correctif que `detectSharpTurns` ci-dessus (voir son commentaire pour le détail
+        // complet). BUG corrigé (2026-08-25, découvert par un test de bout en bout via une vraie
+        // vidéo synthétique passée dans le vrai pipeline Vision de l'app, PAS seulement un harnais
+        // numérique) : un objet se déplaçant en ligne parfaitement droite dans cette vidéo de test
+        // (avion de ligne simulé) déclenchait encore un "zigzag" à 2 changements de direction — le
+        // bruit de suivi réel produit par le détecteur Vision d'image en image suffisait à franchir
+        // le seuil de 12° d'une comparaison trop rapprochée, malgré une trajectoire globale mesurée
+        // à R² = 0.97 (quasi rectiligne).
+        let totalDuration = (samples.last?.timestamp ?? 0) - (samples.first?.timestamp ?? 0)
+        let averageDt = samples.count > 1 ? totalDuration / Double(samples.count - 1) : 0
+        let strideCount = averageDt > 0 ? Swift.max(1, Int((curvatureBaselineSeconds / averageDt).rounded())) : 1
+        guard points.count > 2 * strideCount else { return (false, 0) }
+
         var signs: [Int] = []
-        for i in 1..<(points.count - 1) {
-            let v1 = CGVector(dx: points[i].x - points[i-1].x, dy: points[i].y - points[i-1].y)
-            let v2 = CGVector(dx: points[i+1].x - points[i].x, dy: points[i+1].y - points[i].y)
+        for i in stride(from: strideCount, to: points.count - strideCount, by: 1) {
+            let v1 = CGVector(dx: points[i].x - points[i - strideCount].x, dy: points[i].y - points[i - strideCount].y)
+            let v2 = CGVector(dx: points[i + strideCount].x - points[i].x, dy: points[i + strideCount].y - points[i].y)
             let len1 = (v1.dx * v1.dx + v1.dy * v1.dy).squareRoot()
             let len2 = (v2.dx * v2.dx + v2.dy * v2.dy).squareRoot()
             guard len1 > 0.0001, len2 > 0.0001 else { continue }

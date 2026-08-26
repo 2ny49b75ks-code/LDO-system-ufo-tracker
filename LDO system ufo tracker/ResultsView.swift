@@ -59,11 +59,31 @@ struct ResultsView: View {
                             .foregroundColor(.orange)
                     }
 
+                    // Ordre demandé explicitement par Jean-David (2026-08-25) : date/heure, forme,
+                    // illumination, direction, vitesse, distance, comparaison, accélération (angulaire
+                    // puis linéaire), force G, son.
                     Group {
+                        resultRow("Date et heure", session.timestamp.formatted())
                         resultRow("Forme détectée", session.shapeDescription +
                                   " (\(Int(session.shapeConfidence * 100))% de confiance)")
+                        resultRow("Illumination", "\(session.illuminationPattern) — couleur : \(session.illuminationColor)")
                         resultRow("Direction", session.isLinear ? "Trajectoire rectiligne continue (R²: \(String(format: "%.2f", session.linearityR2)))" : "Trajectoire asymétrique / changements brusques (R²: \(String(format: "%.2f", session.linearityR2)))")
+                        resultRow("Vitesse", "Moyenne : \(Int(session.estimatedSpeedKmh)) km/h — Max : \(Int(session.maxSpeedKmh)) km/h" +
+                                  (session.speedConfidence > 0 ? " (confiance : \(Int(session.speedConfidence * 100))%)" : ""))
+                        resultRow("Distance estimée", distanceText())
+                        resultRow("Comparaison", session.speedComparisonLabel)
+                        if let matchedBody = session.matchedCelestialBody {
+                            resultRow("Correspondance astronomique", "Direction compatible avec \(matchedBody)" +
+                                      (session.celestialMatchSeparationDegrees.map { " (écart : \(String(format: "%.1f", $0))°, approximatif)" } ?? ""))
+                        }
+                    }
+                    Group {
                         resultRow("Accélération angulaire max.", "\(Int(session.maxAngularAccelerationDegPerS2))°/s² (mesure indépendante de la distance)")
+                        if session.speedDefiesPhysics {
+                            resultRow("Accélération linéaire", "⚠️ \(Int(session.maxLinearAccelerationMS2)) m/s² soutenus — dépasse la performance des aéronefs connus")
+                        } else {
+                            resultRow("Accélération linéaire", "\(Int(session.maxLinearAccelerationMS2)) m/s²")
+                        }
                         if session.hasImpossibleGForce {
                             resultRow("Force G estimée", "⚠️ \(String(format: "%.1f", session.estimatedGForce)) G — dépasse la tolérance humaine (~9G) — confiance : \(Int(session.gForceConfidence * 100))%")
                         } else if session.gForceConfidence > 0 {
@@ -71,20 +91,7 @@ struct ResultsView: View {
                         } else {
                             resultRow("Force G estimée", "Non calculable (distance à l'objet trop incertaine)")
                         }
-                        resultRow("Illumination", "\(session.illuminationPattern) — couleur : \(session.illuminationColor)")
-                        resultRow("Vitesse", "Moyenne : \(Int(session.estimatedSpeedKmh)) km/h — Max : \(Int(session.maxSpeedKmh)) km/h" +
-                                  (session.speedConfidence > 0 ? " (confiance : \(Int(session.speedConfidence * 100))%)" : ""))
-                        resultRow("Comparaison", session.speedComparisonLabel)
-                        if session.speedDefiesPhysics {
-                            resultRow("Accélération", "⚠️ \(Int(session.maxLinearAccelerationMS2)) m/s² soutenus — dépasse la performance des aéronefs connus")
-                        }
-                        resultRow("Distance estimée", distanceText())
-                        if let matchedBody = session.matchedCelestialBody {
-                            resultRow("Correspondance astronomique", "Direction compatible avec \(matchedBody)" +
-                                      (session.celestialMatchSeparationDegrees.map { " (écart : \(String(format: "%.1f", $0))°, approximatif)" } ?? ""))
-                        }
                         resultRow("Son", session.soundClassification)
-                        resultRow("Date et heure", session.timestamp.formatted())
                     }
 
                     // Carte en vue aérienne avec le tracé de la trajectoire

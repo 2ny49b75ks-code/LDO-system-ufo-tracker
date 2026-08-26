@@ -27,11 +27,22 @@ final class SoundClassifier {
     /// même 0,3 reflète une vraie incertitude, pas un simple son distant).
     private let confidenceThreshold: Double = 0.3
 
+    /// Seuil plus bas pour un deuxième palier "probable" plutôt que de rejeter silencieusement toute
+    /// étiquette sous 0,3 (2026-08-25, même cas que ci-dessus) — un son distant et partiellement
+    /// couvert par le vent franchit souvent ce plancher sans jamais atteindre 0,3, alors que
+    /// l'étiquette elle-même reste correcte plus souvent qu'au hasard à ce niveau de confiance.
+    private let lowConfidenceThreshold: Double = 0.15
+
     /// Correspondance entre les étiquettes du classificateur Apple et les catégories utiles à LDO.
     /// Catégories moteur/avion élargies (2026-08-09) : la seule présence de "Aircraft"/"Fixed-wing
     /// aircraft, airplane" ne couvrait pas les cas où le classificateur identifie plus spécifiquement
     /// le BRUIT DE MOTEUR entendu (jet lointain, hélice) sans forcément reconnaître la silhouette
     /// "avion" en tant que telle depuis le son seul.
+    /// Catégories élargies une deuxième fois (2026-08-25, signalé par Jean-David : un avion de ligne
+    /// clairement audible sur sa vidéo ressortait encore "Aucun son distinctif détecté") — le
+    /// classificateur Apple étiquette parfois un moteur d'avion filmé à distance sous une catégorie
+    /// plus générique (bruit moteur/véhicule) sans forcément retenir l'étiquette spécifique "Aircraft"
+    /// / "Jet engine", surtout mêlé au bruit de vent du micro du téléphone.
     private let categoryMapping: [String: String] = [
         "Aircraft": "avion",
         "Fixed-wing aircraft, airplane": "avion",
@@ -44,7 +55,15 @@ final class SoundClassifier {
         "Insect": "insecte",
         "Bird vocalization, bird call, bird song": "oiseau",
         "Bird": "oiseau",
-        "Wind noise (microphone)": "vent (aucune source identifiable)"
+        "Wind noise (microphone)": "vent (aucune source identifiable)",
+        "Vehicle": "moteur (véhicule/aéronef, type non précisé)",
+        "Engine": "moteur (type non précisé, cohérent avec avion/drone)",
+        "Engine starting": "moteur (type non précisé, cohérent avec avion/drone)",
+        "Idling": "moteur (type non précisé, cohérent avec avion/drone)",
+        "Accelerating, revving, vroom": "moteur (type non précisé, cohérent avec avion/drone)",
+        "Hum": "bourdonnement moteur (type non précisé)",
+        "Rumble": "grondement moteur/aéronef lointain",
+        "White noise": "bruit large bande (vent ou moteur lointain, non identifiable avec certitude)"
     ]
 
     func classifySound(videoURL: URL?, completion: @escaping (SoundResult) -> Void) {
@@ -121,20 +140,38 @@ final class SoundClassifier {
 
     private func bestMatch(among results: [(identifier: String, confidence: Double)]) -> SoundResult {
         // Ne retient que les étiquettes pertinentes pour LDO, à la confiance la plus élevée.
-        let relevant = results
+        let relevantAboveMain = results
             .compactMap { result -> (String, Double)? in
                 guard let mapped = categoryMapping[result.identifier], result.confidence >= confidenceThreshold else { return nil }
                 return (mapped, result.confidence)
             }
             .sorted { $0.1 > $1.1 }
 
-        guard let top = relevant.first else {
+        if let top = relevantAboveMain.first {
+            return SoundResult(
+                label: "Son cohérent avec : \(top.0) (\(Int(top.1 * 100))% de confiance)",
+                matchedCategory: top.0,
+                confidence: top.1
+            )
+        }
+
+        // Palier "probable" (2026-08-25) : rien n'a atteint le seuil principal, mais une catégorie
+        // pertinente reste au-dessus du plancher plus bas — mieux vaut la montrer, marquée comme
+        // incertaine, qu'afficher "aucun son" alors que le classificateur a bien détecté quelque chose.
+        let relevantLowConfidence = results
+            .compactMap { result -> (String, Double)? in
+                guard let mapped = categoryMapping[result.identifier], result.confidence >= lowConfidenceThreshold else { return nil }
+                return (mapped, result.confidence)
+            }
+            .sorted { $0.1 > $1.1 }
+
+        guard let lowTop = relevantLowConfidence.first else {
             return SoundResult(label: "Aucun son distinctif détecté", matchedCategory: nil, confidence: 0)
         }
         return SoundResult(
-            label: "Son cohérent avec : \(top.0) (\(Int(top.1 * 100))% de confiance)",
-            matchedCategory: top.0,
-            confidence: top.1
+            label: "Son probablement cohérent avec : \(lowTop.0) (\(Int(lowTop.1 * 100))% de confiance — faible, à confirmer)",
+            matchedCategory: lowTop.0,
+            confidence: lowTop.1
         )
     }
 }
