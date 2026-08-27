@@ -41,12 +41,32 @@ final class MotionDetector {
     /// par défaut le repli « plus grand candidat » ci-dessous).
     private let maximumElongationRatio: CGFloat = 10
 
-    /// `true` si `box` a une forme raisonnablement compacte (voir `maximumElongationRatio`) plutôt
-    /// qu'une ligne fine traversant le cadre.
+    /// Tolérance (fraction du cadre) en deçà de laquelle un bord de boîte englobante est considéré
+    /// comme « touchant » le bord de l'image plutôt que d'être simplement proche.
+    private let frameEdgeTolerance: CGFloat = 0.01
+
+    /// `true` si `box` a une forme raisonnablement compacte (voir `maximumElongationRatio`) ET ne
+    /// touche AUCUN bord du cadre — pas seulement une ligne fine traversant le cadre.
+    ///
+    /// BUG réel corrigé (2026-08-26, vidéo réelle fournie par Jean-David — avion filmé à travers une
+    /// trouée entre des arbres) : sans ce deuxième critère, le détecteur verrouillait sur le feuillage
+    /// d'un arbre en bordure d'image plutôt que sur l'avion minuscule au centre du ciel dégagé — le
+    /// feuillage, bien plus grand que l'avion à cette distance, gagnait systématiquement le repli
+    /// « plus grand candidat plausible » de `brightestBoundingBox`/`darkestBoundingBox`. Un vrai objet
+    /// volant isolé dans le ciel (avion, oiseau, drone, OVNI) n'a, sur la quasi-totalité de son
+    /// passage dans le cadre, AUCUN bord de sa boîte englobante collé à x=0, y=0, x=1 ou y=1 — alors
+    /// qu'un arbre, un toit ou tout autre obstacle statique en bordure de cadre y touche presque
+    /// toujours, puisqu'il continue hors champ. Repère fiable et indépendant de l'aire du candidat.
     private func isPlausibleObjectShape(_ box: CGRect) -> Bool {
         let longSide = max(box.width, box.height)
         let shortSide = max(min(box.width, box.height), 0.0001)
-        return (longSide / shortSide) < maximumElongationRatio
+        guard (longSide / shortSide) < maximumElongationRatio else { return false }
+
+        let touchesEdge = box.minX <= frameEdgeTolerance
+            || box.minY <= frameEdgeTolerance
+            || box.maxX >= 1 - frameEdgeTolerance
+            || box.maxY >= 1 - frameEdgeTolerance
+        return !touchesEdge
     }
 
     /// Détecte les objets en mouvement sur l'ensemble de la séquence capturée.
@@ -149,6 +169,201 @@ final class MotionDetector {
         }
         guard detections.count >= 3 else { return [] }
         return [TrackedObject(id: UUID(), detections: detections)]
+    }
+
+    /// Détecte une traînée de condensation (blanche/grise, nettement allongée) directement sur
+    /// l'IMAGE ENTIÈRE plutôt qu'autour d'un objet déjà suivi — demande explicite de Jean-David
+    /// (2026-08-26, deux vidéos réelles d'avions avec traînée nette). BUG corrigé : chercher une
+    /// traînée seulement autour de l'avion lui-même (suivi par `detectDarkObjectOnBrightSky`) hérite
+    /// de la fragilité de ce suivi sur une cible minuscule/lointaine dans une scène encombrée (arbres,
+    /// fil électrique) — le suivi de l'avion « saute » facilement d'une image à l'autre (grand écart
+    /// de position, trous dans la séquence), et la recherche de traînée autour d'une position fausse
+    /// ne trouve rien. La traînée elle-même est un bien meilleur candidat de suivi : beaucoup plus
+    /// grande, plus contrastée et plus stable d'une image à l'autre que le minuscule avion à son
+    /// origine — la chercher directement, indépendamment du suivi de l'avion, est plus robuste.
+    func detectContrailCandidate(in frames: [CapturedFrame]) -> [TrackedObject] {
+        guard isBrightScene(frames) else { return [] }
+
+        // Passe 1 : le MEILLEUR candidat de CHAQUE image, indépendamment (pas de contrainte de
+        // continuité ici) — une scène peut contenir plusieurs taches blanches sans rapport (un petit
+        // nuage isolé, un reflet fixe) en plus de la vraie traînée.
+        var perFrameCandidates: [(timestamp: TimeInterval, box: CGRect)] = []
+        for frame in frames {
+            guard let box = contrailBoundingBox(in: frame.image) else { continue }
+            perFrameCandidates.append((frame.timestamp, box))
+        }
+        guard perFrameCandidates.count >= 3 else { return [] }
+
+        // Passe 2 : regroupe ces candidats par PROXIMITÉ à travers la séquence — une vraie traînée
+        // reste au même endroit (à son propre allongement près) d'une image à l'autre ; un artefact
+        // isolé n'apparaît que sporadiquement, pas de façon soutenue au même endroit.
+        //
+        // BUG corrigé (2026-08-26, vidéo réelle avec traînée fournie par Jean-David) : choisir le
+        // meilleur candidat image par image avec continuité en avant seulement (accroche sur le
+        // premier candidat rencontré, puis pénalise la distance) est fragile si la toute PREMIÈRE
+        // image accroche par hasard sur le mauvais candidat (un artefact fixe plutôt que la vraie
+        // traînée) — tout le suivi reste alors verrouillé sur cet artefact. Regrouper D'ABORD sur
+        // l'ensemble de la séquence, puis choisir le groupe le plus SOUTENU (le plus de détections),
+        // ne dépend pas de l'ordre d'arrivée.
+        var clusters: [[(timestamp: TimeInterval, box: CGRect)]] = []
+        let clusterDistanceThreshold = 0.12
+        for candidate in perFrameCandidates {
+            let center = CGPoint(x: candidate.box.midX, y: candidate.box.midY)
+            if let index = clusters.indices.min(by: { lhs, rhs in
+                clusterDistance(clusters[lhs], to: center) < clusterDistance(clusters[rhs], to: center)
+            }), clusterDistance(clusters[index], to: center) < clusterDistanceThreshold {
+                clusters[index].append(candidate)
+            } else {
+                clusters.append([candidate])
+            }
+        }
+
+        guard let bestCluster = clusters.max(by: { $0.count < $1.count }), bestCluster.count >= 3 else { return [] }
+
+        // BUG corrigé (2026-08-26, vidéo réelle SANS traînée fournie par Jean-David) : un fil
+        // électrique, un rebord de toit ou toute autre structure fine et fixe de la scène peut
+        // satisfaire les critères de saturation/élongation à CHAQUE image, formant un groupe soutenu
+        // qui ressemble à une traînée réelle par sa continuité — mais sa boîte reste alors de taille
+        // QUASI IDENTIQUE d'une image à l'autre (ici : bloquée à exactement 1 ligne de la grille sur
+        // les 14 détections). Une vraie traînée s'ALLONGE progressivement à mesure qu'elle se forme
+        // (×4 environ sur la traînée réelle confirmée). On exige donc une croissance significative de
+        // la hauteur de la boîte à travers le groupe pour la retenir comme traînée plutôt qu'un
+        // artefact fixe de la scène.
+        let heights = bestCluster.map { Double($0.box.height) }
+        guard let minHeight = heights.min(), let maxHeight = heights.max(), minHeight > 0,
+              maxHeight / minHeight >= 1.8 else { return [] }
+
+        let detections = bestCluster
+            .sorted { $0.timestamp < $1.timestamp }
+            .map { Detection(boundingBox: $0.box, timestamp: $0.timestamp) }
+        return [TrackedObject(id: UUID(), detections: detections)]
+    }
+
+    /// Distance entre un point et le dernier centre connu d'un groupe (pas sa moyenne globale) — une
+    /// traînée qui s'allonge progressivement dérive lentement, comparer au dernier point reste donc
+    /// plus fiable qu'un centroïde figé sur tout l'historique du groupe.
+    private func clusterDistance(_ cluster: [(timestamp: TimeInterval, box: CGRect)], to point: CGPoint) -> Double {
+        guard let last = cluster.last else { return .infinity }
+        return hypot(Double(last.box.midX - point.x), Double(last.box.midY - point.y))
+    }
+
+    /// Trouve, sur une image, la plus grande composante connexe de pixels significativement MOINS
+    /// saturés que le bleu du ciel environnant (une traînée de condensation, même fine, dilue/éclaircit
+    /// le bleu plutôt que de produire un blanc pur — voir la note ci-dessous) et suffisamment allongée
+    /// pour être une traînée plutôt qu'un nuage compact. Composantes connexes calculées par
+    /// remplissage par diffusion (flood fill) sur une grille sous-échantillonnée.
+    ///
+    /// BUGS CORRIGÉS (2026-08-26, deux vidéos réelles fournies par Jean-David) :
+    ///  1. `ciContext.render(toBitmap:)` NE redimensionne PAS l'image pour remplir un buffer plus
+    ///     petit — il rend `bounds` pixel pour pixel. Sans mise à l'échelle explicite au préalable
+    ///     (`CIImage.transformed`), le rendu vers une petite grille ne lisait que le coin de l'image
+    ///     près de l'origine, jamais une vue d'ensemble — la traînée n'était donc jamais examinée du
+    ///     tout, peu importe le seuil de couleur utilisé.
+    ///  2. Seuil de saturation ABSOLU (< 0,15) beaucoup trop strict : une vraie traînée de
+    ///     condensation, mesurée sur les deux vidéos réelles, reste un bleu ÉCLAIRCI (saturation
+    ///     ~0,40-0,50) plutôt qu'un blanc pur — jamais sous ~0,35 même en son point le plus net. Seuil
+    ///     désormais ADAPTATIF : relatif à la saturation moyenne du ciel environnant CETTE image (même
+    ///     principe que le seuil de luminosité adaptatif de `detectByLuminosity`/`darkestBoundingBox`),
+    ///     pas une valeur fixe qui suppose à tort un blanc net.
+    private func contrailBoundingBox(in image: CGImage) -> CGRect? {
+        let cols = 120
+        let rows = max(1, Int((Double(cols) * Double(image.height) / Double(image.width)).rounded()))
+
+        let ciImage = CIImage(cgImage: image)
+        let scale = CGAffineTransform(scaleX: Double(cols) / Double(image.width), y: Double(rows) / Double(image.height))
+        let scaled = ciImage.transformed(by: scale)
+
+        var bitmap = [UInt8](repeating: 0, count: cols * rows * 4)
+        ciContext.render(
+            scaled, toBitmap: &bitmap, rowBytes: cols * 4,
+            bounds: CGRect(x: 0, y: 0, width: cols, height: rows),
+            format: .RGBA8, colorSpace: nil
+        )
+
+        // Passe 1 : saturation moyenne des pixels assez lumineux (ciel), sert de référence pour le
+        // seuil adaptatif ci-dessous.
+        var brightSaturations: [Double] = []
+        for i in 0..<(cols * rows) {
+            let o = i * 4
+            let r = Double(bitmap[o]), g = Double(bitmap[o + 1]), b = Double(bitmap[o + 2])
+            let maxC = max(r, max(g, b)), minC = min(r, min(g, b))
+            guard maxC / 255.0 > 0.3 else { continue }
+            brightSaturations.append(maxC > 0 ? (maxC - minC) / maxC : 0)
+        }
+        guard !brightSaturations.isEmpty else { return nil }
+        let averageSkySaturation = brightSaturations.reduce(0, +) / Double(brightSaturations.count)
+        // Sans écart significatif à mesurer (ciel déjà peu saturé — couvert/brumeux), le signal n'a
+        // pas de sens : pas de référence "bleu franc" contre laquelle repérer un éclaircissement.
+        guard averageSkySaturation > 0.25 else { return nil }
+        let saturationThreshold = averageSkySaturation * 0.75
+
+        // Passe 2 : pixels notablement moins saturés que cette moyenne = candidats traînée.
+        var isWhite = [Bool](repeating: false, count: cols * rows)
+        for i in 0..<(cols * rows) {
+            let o = i * 4
+            let r = Double(bitmap[o]), g = Double(bitmap[o + 1]), b = Double(bitmap[o + 2])
+            let maxC = max(r, max(g, b)), minC = min(r, min(g, b))
+            let brightness = maxC / 255.0
+            let saturation = maxC > 0 ? (maxC - minC) / maxC : 0
+            isWhite[i] = brightness > 0.3 && saturation < saturationThreshold
+        }
+
+        // Remplissage par diffusion : regroupe les cellules blanches contiguës (8-connexité) en
+        // composantes, retient la plus grande suffisamment allongée.
+        var visited = [Bool](repeating: false, count: cols * rows)
+        var bestBox: (minCol: Int, maxCol: Int, minRow: Int, maxRow: Int, count: Int)?
+        var bestScore = -Double.infinity
+
+        for startIndex in 0..<(cols * rows) where isWhite[startIndex] && !visited[startIndex] {
+            var stack = [startIndex]
+            visited[startIndex] = true
+            var minCol = cols, maxCol = -1, minRow = rows, maxRow = -1, count = 0
+
+            while let index = stack.popLast() {
+                let col = index % cols, row = index / cols
+                minCol = min(minCol, col); maxCol = max(maxCol, col)
+                minRow = min(minRow, row); maxRow = max(maxRow, row)
+                count += 1
+
+                for dRow in -1...1 {
+                    for dCol in -1...1 {
+                        guard dRow != 0 || dCol != 0 else { continue }
+                        let neighborCol = col + dCol, neighborRow = row + dRow
+                        guard neighborCol >= 0, neighborCol < cols, neighborRow >= 0, neighborRow < rows else { continue }
+                        let neighborIndex = neighborRow * cols + neighborCol
+                        guard isWhite[neighborIndex], !visited[neighborIndex] else { continue }
+                        visited[neighborIndex] = true
+                        stack.append(neighborIndex)
+                    }
+                }
+            }
+
+            // Composante trop petite (bruit) ou couvrant presque tout le cadre (ciel couvert, pas
+            // une traînée fine) : écartée.
+            guard count >= 4, count <= (cols * rows) / 3 else { continue }
+            let spanCols = Double(maxCol - minCol + 1), spanRows = Double(maxRow - minRow + 1)
+            let elongation = max(spanCols, spanRows) / max(min(spanCols, spanRows), 1)
+            guard elongation > 3.0 else { continue }
+
+            // Meilleur candidat de CETTE image, indépendamment des autres images — le regroupement
+            // par proximité à travers toute la séquence (voir `detectContrailCandidate`) se charge de
+            // distinguer la vraie traînée soutenue d'un éventuel artefact isolé.
+            let score = Double(count) * elongation
+            if score > bestScore {
+                bestScore = score
+                bestBox = (minCol, maxCol, minRow, maxRow, count)
+            }
+        }
+
+        guard let best = bestBox else { return nil }
+        // Grille -> repère Vision normalisé (origine bas-gauche) : l'axe des lignes de la grille va
+        // du haut vers le bas de l'image, donc on inverse pour Y.
+        let x = Double(best.minCol) / Double(cols)
+        let width = Double(best.maxCol - best.minCol + 1) / Double(cols)
+        let yTop = Double(best.minRow) / Double(rows)
+        let height = Double(best.maxRow - best.minRow + 1) / Double(rows)
+        let y = 1 - yTop - height
+        return CGRect(x: x, y: y, width: width, height: height)
     }
 
     /// Échantillonne quelques images pour estimer si la scène est globalement sombre.

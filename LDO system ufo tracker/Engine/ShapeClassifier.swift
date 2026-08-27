@@ -67,10 +67,19 @@ final class ShapeClassifier {
         let midDetection = detections[safe: detections.count / 2]
         let luminous = midDetection.flatMap { isolateLuminousRegion(for: $0, frames: frames) }
 
+        // 3bis. Traînée de condensation (Mode Jour) — voir VerdictCalculator, qui croise ce signal
+        // avec la direction verticale (montée = avion, descente = météorite). Détection déplacée dans
+        // MotionDetector.detectContrailCandidate (recherche sur l'image ENTIÈRE, pas seulement dans
+        // une région autour de cet objet suivi) : plus robuste sur une cible minuscule/lointaine dont
+        // le suivi lui-même peut « sauter » d'une image à l'autre — voir son commentaire. `hasContrail`
+        // reste ici à `false` par défaut ; `AnalysisEngine` le remplace par le résultat de cette
+        // détection indépendante.
+        let hasContrail = false
+
         // 4. Classification heuristique combinant ces signaux.
         let (label, confidence) = heuristicClassify(motion: motion, sizeVariability: sizeVariability, aspectRatio: aspectRatio, straightness: straightness, totalDisplacement: totalDisplacement, mode: mode)
 
-        return ShapeResult(label: label, confidence: confidence, luminousRegion: luminous)
+        return ShapeResult(label: label, confidence: confidence, luminousRegion: luminous, hasContrail: hasContrail)
     }
 
     /// Isole la zone lumineuse pour une détection donnée (réutilisé par IlluminationAnalyzer pour
@@ -220,9 +229,23 @@ final class ShapeClassifier {
     /// les boîtes de détection) sert de garde-fou : un objet quasi immobile qui tremblote sur place
     /// peut avoir un chemin « droit » par pur hasard sur un déplacement négligeable, ce qui ne doit
     /// pas suffire à conclure à un avion.
+    ///
+    /// BUG corrigé (2026-08-26, vidéo réelle d'avion lointain fournie par Jean-David) : calculé sur
+    /// les centres BRUTS des boîtes de détection, cette rectitude tombait à tort sous le seuil avion
+    /// (0,85) pour un avion qui dérivait pourtant de façon nette et continue dans une seule direction
+    /// sur tout le clip — un point lumineux minuscule et proche du seuil de détection produit un
+    /// centre qui gigote légèrement d'une image à l'autre (bruit de seuillage adaptatif, pas un vrai
+    /// changement de trajectoire), ce qui gonfle artificiellement la longueur du chemin PARCOURU par
+    /// rapport au déplacement NET. Un léger lissage (moyenne glissante) absorbe ce bruit image par
+    /// image tout en préservant la tendance directionnelle réelle sur l'ensemble du clip — contraire
+    /// au choix délibéré de TrajectoryCalculator d'utiliser des échantillons bruts pour la vitesse/les
+    /// virages (préserver des PICS réels), mais ici le signal recherché est la forme d'ENSEMBLE du
+    /// chemin, pas un extremum instantané.
     private func pathStraightnessAndDisplacement(_ detections: [Detection]) -> (straightness: Double, totalDisplacement: Double) {
-        let centers = detections.map { CGPoint(x: $0.boundingBox.midX, y: $0.boundingBox.midY) }
-        guard let first = centers.first, let last = centers.last, centers.count >= 2 else { return (1, 0) }
+        let rawCenters = detections.map { CGPoint(x: $0.boundingBox.midX, y: $0.boundingBox.midY) }
+        guard let first = rawCenters.first, let last = rawCenters.last, rawCenters.count >= 2 else { return (1, 0) }
+
+        let centers = smoothedCenters(rawCenters, window: 3)
 
         var pathLength: CGFloat = 0
         for i in 1..<centers.count {
@@ -231,6 +254,20 @@ final class ShapeClassifier {
         let netDisplacement = hypot(last.x - first.x, last.y - first.y)
         guard pathLength > 0 else { return (1, 0) }
         return (Double(netDisplacement / pathLength), Double(netDisplacement))
+    }
+
+    private func smoothedCenters(_ centers: [CGPoint], window: Int) -> [CGPoint] {
+        guard centers.count > window else { return centers }
+        var result: [CGPoint] = []
+        for i in 0..<centers.count {
+            let lo = max(0, i - window / 2)
+            let hi = min(centers.count - 1, i + window / 2)
+            let slice = centers[lo...hi]
+            let avgX = slice.reduce(0) { $0 + $1.x } / CGFloat(slice.count)
+            let avgY = slice.reduce(0) { $0 + $1.y } / CGFloat(slice.count)
+            result.append(CGPoint(x: avgX, y: avgY))
+        }
+        return result
     }
 
     private func heuristicClassify(motion: MotionSignature, sizeVariability: Double, aspectRatio: Double, straightness: Double, totalDisplacement: Double, mode: CaptureMode) -> (String, Double) {
@@ -335,6 +372,9 @@ struct ShapeResult {
     let label: String
     let confidence: Double
     let luminousRegion: LuminousRegion?
+    /// Traînée de condensation blanche détectée autour de l'objet (Mode Jour) — voir
+    /// `ShapeClassifier.detectContrail` et les règles correspondantes dans `VerdictCalculator`.
+    var hasContrail: Bool = false
 }
 
 private extension Array {

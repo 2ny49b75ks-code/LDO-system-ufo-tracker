@@ -64,11 +64,20 @@ final class TrajectoryCalculator {
         let angularAcceleration = derivative(angularVelocities)     // degrés/seconde²
         let maxAngularAcceleration = robustPeak(angularAcceleration)
 
-        // 5. Détection des changements de direction brusques (virages) par courbure locale — aussi
-        //    sur les échantillons bruts, pour la même raison. Calculé ici (avant l'estimation des
-        //    forces G ci-dessous) pour pouvoir ancrer le G final sur un vrai virage plutôt que sur le
-        //    bruit image par image.
-        let curvatureEvents = detectSharpTurns(angularSamples, distanceMeters: estimatedDistanceMeters)
+        // 5. Détection des changements de direction brusques (virages) par courbure locale — SUR LES
+        //    ÉCHANTILLONS LISSÉS (contrairement à la vitesse ci-dessus). Calculé ici (avant
+        //    l'estimation des forces G ci-dessous) pour pouvoir ancrer le G final sur un vrai virage
+        //    plutôt que sur le bruit image par image.
+        //    BUG corrigé (2026-08-26, avion réel minuscule/lointain fourni par Jean-David, tout juste
+        //    au-dessus du seuil de détection) : sur les échantillons BRUTS, un objet aussi marginal
+        //    produisait un centre qui gigote assez d'une image à l'autre pour franchir le seuil de
+        //    30°/3 points de `detectSharpTurns` par pur bruit de seuillage — un avion en vol parfaitement
+        //    stable ressortait à ~32 G « impossibles ». Le lissage (même fenêtre que le test de
+        //    linéarité) absorbe ce bruit tout en laissant passer un VRAI virage brusque, dont
+        //    l'amplitude reste largement au-dessus du seuil même après une moyenne glissante sur 3
+        //    points — contrairement au bruit de gigotement, dont l'amplitude est du même ordre que la
+        //    fenêtre de lissage elle-même.
+        let curvatureEvents = detectSharpTurns(smoothed, distanceMeters: estimatedDistanceMeters)
 
         // 6. Estimation des forces G — ANCRÉE SUR LES VIRAGES RÉELLEMENT DÉTECTÉS (`curvatureEvents`
         //    ci-dessus, seuil >30° sur une fenêtre de 3 échantillons), PAS sur le pic brut de la double
@@ -105,9 +114,12 @@ final class TrajectoryCalculator {
         //    de direction" (zigzag=vrai) alors que la trajectoire réelle dans le ciel était une ligne
         //    quasi parfaite (R² 0.97) — les deux résultats se contredisaient dans l'écran de résultats.
         //    Utilise maintenant la même projection angulaire réelle (corrigée de la pose caméra) que
-        //    la linéarité, sur les échantillons BRUTS (non lissés, comme les virages/vitesse ci-dessus)
-        //    pour ne pas non plus écraser un vrai zigzag brusque.
-        let zigzag = detectZigzagPattern(angularSamples)
+        //    la linéarité — et, comme `curvatureEvents` ci-dessus (bug du 2026-08-26), sur les
+        //    échantillons LISSÉS plutôt que bruts : un objet minuscule/lointain proche du seuil de
+        //    détection produit assez de gigotement de centre pour ressortir comme un faux zigzag à
+        //    répétition, alors qu'un vrai zigzag brusque reste largement au-dessus du seuil même après
+        //    un lissage sur 3 points.
+        let zigzag = detectZigzagPattern(smoothed)
 
         return TrajectoryResult(
             points2D: points2D,
@@ -127,14 +139,27 @@ final class TrajectoryCalculator {
     // MARK: - 1. Conversion pixel -> rayon 3D réel
 
     /// Convertit une boîte englobante (repère Vision, normalisé, origine bas-gauche) en une direction
-    /// unitaire dans l'espace réel, en tenant compte de la focale (intrinsics) et de l'orientation
-    /// de la caméra au moment exact de la détection (cameraTransform). Retourne `nil` si cette image
-    /// n'a pas de pose ARKit associée (vidéo importée depuis la bibliothèque) : dans ce cas, la
-    /// trajectoire ne peut être calculée que sur les points 2D à l'écran (voir `points2D`), pas en
-    /// direction réelle dans le ciel.
+    /// unitaire, en tenant compte de la focale (intrinsics) et, quand elle est disponible, de
+    /// l'orientation de la caméra au moment exact de la détection (cameraTransform).
+    ///
+    /// BUG CORRIGÉ (2026-08-26, vidéo réelle fournie par Jean-David, importée depuis la bibliothèque) :
+    /// cette fonction retournait `nil` dès que `cameraTransform` OU `intrinsics` manquait — CE QUI EST
+    /// TOUJOURS LE CAS pour une vidéo importée (jamais filmée par LDO, aucune métadonnée de pose
+    /// ARKit) — bloquant purement et simplement TOUT calcul de trajectoire/vitesse/G pour ce cas
+    /// d'usage pourtant courant (« analyser une vidéo que j'ai déjà »), pas seulement pour un
+    /// enregistrement LIVE ré-analysé. Fallbacks ajoutés :
+    ///  - `intrinsics` manquantes : focale estimée par un champ de vision horizontal typique de
+    ///    caméra arrière de smartphone (~60°), même hypothèse que `DistanceEstimator`.
+    ///  - `cameraTransform` manquant : la direction en repère CAMÉRA (avant rotation vers le monde)
+    ///    est utilisée directement, ce qui revient à supposer que la caméra ne bouge pas pendant le
+    ///    court extrait analysé. Approximation raisonnable pour un plan tenu relativement immobile
+    ///    (cas courant d'une observation où on lève le téléphone sans bouger) — mais elle NE corrige
+    ///    PAS un panoramique/tremblement de main comme le ferait la vraie pose ARKit : un mouvement de
+    ///    caméra non corrigé se traduirait alors par une vitesse angulaire faussée. Ce n'est pas
+    ///    dissimulé : la confiance finale sur la distance (voir `DistanceEstimator`, toujours ≤ 0.3)
+    ///    plafonne déjà la confiance affichée sur la vitesse/les forces G qui en dérivent, quelle que
+    ///    soit la précision de CETTE étape-ci.
     private func rayDirection(for box: CGRect, frame: CapturedFrame) -> SIMD3<Double>? {
-        guard let intrinsics = frame.intrinsics, let cameraTransform = frame.cameraTransform else { return nil }
-
         let imageWidth = Double(frame.image.width)
         let imageHeight = Double(frame.image.height)
 
@@ -142,14 +167,29 @@ final class TrajectoryCalculator {
         let pixelX = Double(centerNorm.x) * imageWidth
         let pixelY = (1.0 - Double(centerNorm.y)) * imageHeight   // Vision (bas-gauche) -> image (haut-gauche)
 
-        let fx = Double(intrinsics.columns.0.x)
-        let fy = Double(intrinsics.columns.1.y)
-        let cx = Double(intrinsics.columns.2.x)
-        let cy = Double(intrinsics.columns.2.y)
+        let fx: Double, fy: Double, cx: Double, cy: Double
+        if let intrinsics = frame.intrinsics {
+            fx = Double(intrinsics.columns.0.x)
+            fy = Double(intrinsics.columns.1.y)
+            cx = Double(intrinsics.columns.2.x)
+            cy = Double(intrinsics.columns.2.y)
+        } else {
+            let assumedHorizontalFOVRadians = 60.0 * Double.pi / 180
+            fx = imageWidth / (2 * tan(assumedHorizontalFOVRadians / 2))
+            fy = fx
+            cx = imageWidth / 2
+            cy = imageHeight / 2
+        }
 
         // Direction dans le repère caméra (axe Z vers l'avant).
         let cameraSpace = SIMD3<Double>((pixelX - cx) / fx, (pixelY - cy) / fy, 1.0)
         let normalizedCameraSpace = simd_normalize(cameraSpace)
+
+        guard let cameraTransform = frame.cameraTransform else {
+            // Pas de pose ARKit : repère caméra utilisé tel quel (suppose une caméra immobile — voir
+            // le commentaire ci-dessus).
+            return normalizedCameraSpace
+        }
 
         // Rotation caméra -> monde, extraite de la pose ARKit à cet instant.
         let rotation = simd_double3x3(

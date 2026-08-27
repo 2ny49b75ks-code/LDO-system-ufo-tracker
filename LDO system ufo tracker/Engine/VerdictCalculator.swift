@@ -41,6 +41,33 @@ final class VerdictCalculator {
             )
         }
 
+        // -0.5. Sur-priorité, même niveau que la règle 0 ci-dessous : une traînée de condensation
+        //    blanche derrière l'objet (Mode Jour, voir ShapeClassifier.detectContrail) est une
+        //    signature visuelle très spécifique, indépendante de la classification heuristique de
+        //    forme (qui peut se tromper sur un objet minuscule/lointain — voir la mise à jour du
+        //    2026-08-26 sur un avion réel classé « oiseau » malgré une trajectoire nette). Demande
+        //    explicite de Jean-David (2026-08-26, vidéo réelle d'un avion en montée avec traînée
+        //    nette) : traînée + objet qui MONTE dans le ciel = avion, quasi certain. Traînée + objet
+        //    qui DESCEND vers le sol = météorite (une traînée qui se forme pendant la chute, pas un
+        //    avion qui grimpe). Sans direction verticale nette (`isAscending == nil`, objet quasi
+        //    stationnaire à l'écran), on ne tranche pas entre les deux — le facteur « traînée » seul
+        //    retombe alors dans le score pondéré ci-dessous plutôt que de forcer une conclusion.
+        if session.hasContrail, let ascending = session.isAscending {
+            if ascending {
+                return VerdictResult(
+                    label: "Probablement identifié (objet connu)",
+                    percent: 0,
+                    factors: ["Traînée de condensation blanche derrière l'objet, qui monte dans le ciel — signature quasi certaine d'un avion en montée"]
+                )
+            } else {
+                return VerdictResult(
+                    label: "Probablement identifié (objet connu)",
+                    percent: 0,
+                    factors: ["Traînée derrière l'objet en direction du sol — signature quasi certaine d'un météorite (traînée formée par la chute), pas un phénomène non identifié"]
+                )
+            }
+        }
+
         // 0. Sur-priorité absolue : si la forme est identifiée avec une confiance suffisante comme
         //    quelque chose de connu (main, insecte, oiseau, avion/satellite) — pas juste "non
         //    identifiée avec certitude" — aucun autre facteur ne doit pouvoir faire remonter le

@@ -37,6 +37,12 @@ struct AnalysisSession: Identifiable, Equatable {
     var curvatureEvents: [CurvatureEvent] = []
     var isZigzagTrajectory: Bool = false      // alternance gauche-droite (voir TrajectoryCalculator)
     var trajectoryReversalCount: Int = 0
+    /// Traînée de condensation détectée autour de l'objet (Mode Jour, voir ShapeClassifier).
+    var hasContrail: Bool = false
+    /// `true` si l'objet monte dans le ciel (position Y croissante à l'écran) sur l'ensemble du
+    /// clip, `false` s'il descend, `nil` si la tendance n'est pas nette. Ne dépend PAS de la pose
+    /// ARKit (contrairement à la trajectoire angulaire) — calculable même sur une vidéo importée.
+    var isAscending: Bool?
 
     var illuminationPattern: String = ""     // "Continue" / "Variable / clignotante"
     var illuminationColor: String = ""       // ex: "blanc-bleuté (probable LED)" / "orangé (probable reflet solaire)"
@@ -158,6 +164,36 @@ final class AnalysisEngine {
         session.shapeDescription = shape.label
         session.shapeConfidence = shape.confidence
         session.known3DModelURL = shapeClassifier.buildApproximate3DSilhouette(luminousRegion: shape.luminousRegion)
+        session.hasContrail = shape.hasContrail
+        // Direction verticale (monte/descend) sur l'ensemble du clip — sur les positions brutes à
+        // l'écran, pas la trajectoire angulaire corrigée de la pose (calculable même sans pose ARKit,
+        // contrairement à cette dernière). Repère Vision : Y croissant = vers le haut de l'image.
+        // Moyenne du premier/dernier cinquième des détections plutôt qu'un simple premier/dernier
+        // point, pour amortir le bruit de détection sur un objet minuscule/lointain (voir
+        // ShapeClassifier.pathStraightnessAndDisplacement, même principe).
+        session.isAscending = verticalTrend(detections)
+
+        // Recherche de traînée INDÉPENDANTE, sur l'image entière plutôt qu'autour de l'objet suivi
+        // ci-dessus (voir MotionDetector.detectContrailCandidate) — remplace le signal ci-dessus
+        // quand elle trouve quelque chose, plus robuste sur une cible minuscule/lointaine dans une
+        // scène encombrée où le suivi de l'objet lui-même « saute » facilement (voir son commentaire).
+        if mode == .day {
+            let contrailObjects = motionDetector.detectContrailCandidate(in: frames)
+            if let contrailDetections = contrailObjects.first?.detections, contrailDetections.count >= 3 {
+                session.hasContrail = true
+                // La dérive verticale à l'écran d'une traînée n'indique PAS de façon fiable si
+                // l'avion monte ou descend réellement : un avion qui grimpe en s'éloignant de
+                // l'observateur peut dériver vers le bas de l'image par pur effet de perspective
+                // (angle d'élévation qui diminue avec la distance, même si l'altitude augmente).
+                // Un météorite en chute, en revanche, produit une chute RAPIDE et nette en 1-2
+                // secondes — bien plus vite que la dérive lente d'un avion. On ne conclut donc
+                // « météorite » que si la descente est nette ET rapide ; sinon, comme une traînée
+                // de condensation est très largement plus souvent le fait d'un avion que d'un
+                // météorite, on retient l'hypothèse avion par défaut.
+                session.isAscending = !contrailIsFastDescent(contrailDetections, yValue: { $0.maxY })
+                debugLog("traînée détectée sur l'image entière : \(contrailDetections.count) détection(s), ascendant=\(String(describing: session.isAscending))")
+            }
+        }
 
         report(2, "Estimation de la distance…")
         // Passe préliminaire : vitesse angulaire (degrés/seconde) SEULE, sans distance — purement
@@ -313,6 +349,50 @@ final class AnalysisEngine {
             return sum + hypot(center.x - point.x, center.y - point.y)
         }
         return total / CGFloat(object.detections.count)
+    }
+
+    /// `true` si l'objet monte vers le haut de l'image sur l'ensemble du clip, `false` s'il descend,
+    /// `nil` si le déplacement vertical net est négligeable (objet quasi stationnaire) — voir
+    /// `AnalysisSession.isAscending`. `yValue` sélectionne le point de la boîte à suivre : le centre
+    /// pour un objet compact (comportement historique), le bord SUPÉRIEUR pour une traînée de
+    /// condensation (voir l'appel dédié ci-dessous et son commentaire).
+    private func verticalTrend(_ detections: [Detection], yValue: (CGRect) -> CGFloat = { $0.midY }) -> Bool? {
+        guard detections.count >= 4 else { return nil }
+        let fifth = max(1, detections.count / 5)
+        let firstGroup = detections.prefix(fifth)
+        let lastGroup = detections.suffix(fifth)
+        let firstY = firstGroup.reduce(CGFloat(0)) { $0 + yValue($1.boundingBox) } / CGFloat(firstGroup.count)
+        let lastY = lastGroup.reduce(CGFloat(0)) { $0 + yValue($1.boundingBox) } / CGFloat(lastGroup.count)
+        let delta = lastY - firstY
+        // Seuil minimal (fraction du cadre) pour ne pas trancher sur un déplacement vertical
+        // négligeable, potentiellement dû au seul bruit de détection.
+        guard abs(delta) > 0.03 else { return nil }
+        return delta > 0
+    }
+
+    /// `true` seulement si la traînée descend de façon nette ET rapide (signature d'une chute de
+    /// météorite) — voir le commentaire d'appel ci-dessus sur l'ambiguïté de perspective. `false`
+    /// dans tous les autres cas (montée, quasi-stationnaire, ou descente trop lente pour être une
+    /// chute), ce qui fait retenir l'hypothèse avion par défaut.
+    private func contrailIsFastDescent(_ detections: [Detection], yValue: (CGRect) -> CGFloat) -> Bool {
+        guard detections.count >= 4 else { return false }
+        let fifth = max(1, detections.count / 5)
+        let firstGroup = detections.prefix(fifth)
+        let lastGroup = detections.suffix(fifth)
+        let firstY = firstGroup.reduce(CGFloat(0)) { $0 + yValue($1.boundingBox) } / CGFloat(firstGroup.count)
+        let lastY = lastGroup.reduce(CGFloat(0)) { $0 + yValue($1.boundingBox) } / CGFloat(lastGroup.count)
+        let delta = lastY - firstY
+        guard delta < -0.03 else { return false }
+        let firstT = firstGroup.reduce(0.0) { $0 + $1.timestamp } / Double(firstGroup.count)
+        let lastT = lastGroup.reduce(0.0) { $0 + $1.timestamp } / Double(lastGroup.count)
+        let dt = lastT - firstT
+        guard dt > 0 else { return false }
+        let speed = Double(abs(delta)) / dt
+        // Seuil empirique : une chute de météorite parcourt une bonne partie du cadre en 1-2
+        // secondes (~0.15-0.3+ unités normalisées/seconde) ; un avion qui recule/monte dérive
+        // typiquement à moins de 0.03 unité/seconde sur ces clips.
+        let fastDescentThresholdPerSecond = 0.08
+        return speed > fastDescentThresholdPerSecond
     }
 }
 
