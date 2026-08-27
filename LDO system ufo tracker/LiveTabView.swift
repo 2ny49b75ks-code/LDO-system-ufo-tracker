@@ -46,7 +46,7 @@ struct LiveTabView: View {
             // (false)` : purement visuel, ne doit jamais intercepter les gestes de zoom/toucher sur le
             // viseur en-dessous.
             RoundedRectangle(cornerRadius: 0)
-                .stroke(Color.ldoNebulaLight, lineWidth: 6)
+                .stroke(Color.ldoNebulaLight, lineWidth: 12)
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
 
