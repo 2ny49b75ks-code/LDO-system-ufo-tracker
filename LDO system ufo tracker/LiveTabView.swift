@@ -141,11 +141,14 @@ struct LiveTabView: View {
             zoomAtButtonDragStart = capture.zoomFactor
         }
 
+        // BUG CORRIGÉ (2026-08-27, Jean-David : « le bouton zoom est encore non fonctionnel ») : le
+        // `DragGesture(minimumDistance: 2)` était attaché à TOUT le contrôle, boutons +/- inclus. Sur
+        // un appareil réel, un tapotement du doigt dérive presque toujours de plus de 2pt — le geste
+        // de glissement du parent captait donc systématiquement le toucher avant que le tap du bouton
+        // ne puisse se déclencher, même si le bouton lui-même était correctement câblé (voir le
+        // correctif précédent, insuffisant seul). Le glisser est maintenant limité au SEUL rail
+        // (la zone entre les deux boutons), qui reste hors de portée du toucher sur les boutons.
         return VStack(spacing: 10) {
-            // BUG CORRIGÉ : ces icônes n'étaient que des `Image` statiques, sans geste attaché —
-            // les toucher ne faisait rien du tout, ce que Jean-David a signalé comme « le bouton
-            // zoom ne fonctionne pas ». Ce sont maintenant de vrais boutons (±0,5× par tapotement),
-            // en plus du glisser sur le rail ci-dessous qui continue de fonctionner.
             Button { step(by: 0.5) } label: {
                 Image(systemName: "plus.magnifyingglass")
                     .font(.caption)
@@ -164,6 +167,20 @@ struct LiveTabView: View {
                     .shadow(color: .black.opacity(0.4), radius: 3)
             }
             .frame(height: zoomRailHeight)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 2)
+                    .onChanged { value in
+                        // Glisser vers le haut (translation négative) augmente le zoom — inverse du
+                        // signe de `translation.height` (positif vers le bas en coordonnées SwiftUI).
+                        let delta = -value.translation.height / zoomRailHeight * zoomRange
+                        let candidate = zoomAtButtonDragStart + delta
+                        capture.zoomFactor = min(max(candidate, CaptureManager.minZoomFactor), CaptureManager.maxZoomFactor)
+                    }
+                    .onEnded { _ in
+                        zoomAtButtonDragStart = capture.zoomFactor
+                    }
+            )
 
             Button { step(by: -0.5) } label: {
                 Image(systemName: "minus.magnifyingglass")
@@ -176,19 +193,6 @@ struct LiveTabView: View {
         .padding(.horizontal, 8)
         .background(.black.opacity(0.35))
         .clipShape(Capsule())
-        .gesture(
-            DragGesture(minimumDistance: 2)
-                .onChanged { value in
-                    // Glisser vers le haut (translation négative) augmente le zoom — inverse du signe
-                    // de `translation.height` (positif vers le bas en coordonnées SwiftUI).
-                    let delta = -value.translation.height / zoomRailHeight * zoomRange
-                    let candidate = zoomAtButtonDragStart + delta
-                    capture.zoomFactor = min(max(candidate, CaptureManager.minZoomFactor), CaptureManager.maxZoomFactor)
-                }
-                .onEnded { _ in
-                    zoomAtButtonDragStart = capture.zoomFactor
-                }
-        )
     }
 }
 
