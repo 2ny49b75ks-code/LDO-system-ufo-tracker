@@ -78,7 +78,6 @@ struct ResultsView: View {
                         }
                     }
                     Group {
-                        resultRow("Accélération angulaire max.", "\(Int(session.maxAngularAccelerationDegPerS2))°/s² (mesure indépendante de la distance)")
                         if session.speedDefiesPhysics {
                             resultRow("Accélération linéaire", "⚠️ \(Int(session.maxLinearAccelerationMS2)) m/s² soutenus — dépasse la performance des aéronefs connus")
                         } else {

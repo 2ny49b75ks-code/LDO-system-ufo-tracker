@@ -58,11 +58,9 @@ final class TrajectoryCalculator {
         //    R² proche de 1 => trajectoire rectiligne continue ; sinon => asymétrique.
         let (isLinear, r2) = linearityTest(smoothed)
 
-        // 4. Vitesse et accélération angulaires calculées sur les échantillons BRUTS (non lissés),
-        //    pour préserver les pics réels de vitesse pendant un virage rapide.
+        // 4. Vitesse angulaire calculée sur les échantillons BRUTS (non lissés), pour préserver les
+        //    pics réels de vitesse pendant un virage rapide.
         let angularVelocities = angularVelocity(angularSamples)     // degrés/seconde
-        let angularAcceleration = derivative(angularVelocities)     // degrés/seconde²
-        let maxAngularAcceleration = robustPeak(angularAcceleration)
 
         // 5. Détection des changements de direction brusques (virages) par courbure locale — SUR LES
         //    ÉCHANTILLONS LISSÉS (contrairement à la vitesse ci-dessus). Calculé ici (avant
@@ -125,7 +123,6 @@ final class TrajectoryCalculator {
             points2D: points2D,
             isLinear: isLinear,
             linearityR2: r2,
-            maxAngularAccelerationDegPerS2: maxAngularAcceleration,
             angularVelocitiesDegPerS: angularVelocities,
             estimatedGForce: gResult.value,
             gForceConfidence: gResult.confidence,
@@ -290,39 +287,9 @@ final class TrajectoryCalculator {
         return result
     }
 
-    private func derivative(_ series: [TimedValue]) -> [TimedValue] {
-        var result: [TimedValue] = []
-        for i in 1..<series.count {
-            let dt = series[i].timestamp - series[i-1].timestamp
-            guard dt > 0.001 else { continue }
-            let d = (series[i].value - series[i-1].value) / dt
-            result.append(TimedValue(timestamp: series[i].timestamp, value: d))
-        }
-        return result
-    }
-
     private func angleBetween(_ a: SIMD3<Double>, _ b: SIMD3<Double>) -> Double {
         let dot = max(-1, min(1, simd_dot(simd_normalize(a), simd_normalize(b))))
         return acos(dot)
-    }
-
-    /// Pic d'accélération angulaire "robuste" : le simple maximum d'une série DEUX FOIS dérivée
-    /// (vitesse puis accélération) est extrêmement sensible au bruit — un seul écart de suivi d'une
-    /// image à l'autre (tremblement, contour de traînée de condensation confondu avec le bord de
-    /// l'avion, etc.) suffit à produire un pic isolé aberrant, amplifié par la double dérivation.
-    /// On ne retient donc un pic que s'il est corroboré par l'échantillon voisin (même ordre de
-    /// grandeur sur 2 échantillons consécutifs, pas juste 1) — même principe que le filtre
-    /// « accélération soutenue » déjà utilisé dans `SpeedCalculator` pour la même raison.
-    /// Corrige un bug réel (signalé par Jean-David, 2026-08-09) : un avion volant en ligne quasi
-    /// parfaitement droite affichait ~427,9 G, provenant d'un unique écart de détection isolé sur une
-    /// image, pas d'un vrai virage.
-    private func robustPeak(_ series: [TimedValue]) -> Double {
-        guard series.count >= 2 else { return series.first.map { abs($0.value) } ?? 0 }
-        var corroboratedPeaks: [Double] = []
-        for i in 1..<series.count {
-            corroboratedPeaks.append(min(abs(series[i-1].value), abs(series[i].value)))
-        }
-        return corroboratedPeaks.max() ?? 0
     }
 
     // MARK: - 5. Virages brusques
@@ -508,7 +475,6 @@ struct TrajectoryResult {
     var points2D: [CGPoint]
     var isLinear: Bool = true
     var linearityR2: Double = 1.0
-    var maxAngularAccelerationDegPerS2: Double = 0
     var angularVelocitiesDegPerS: [TimedValue] = []   // série chronologique, réutilisée pour le calcul de vitesse en km/h
     var estimatedGForce: Double = 0
     var gForceConfidence: Double = 0
@@ -518,6 +484,6 @@ struct TrajectoryResult {
     var directionReversalCount: Int = 0
 
     static func insufficientData(points2D: [CGPoint]) -> TrajectoryResult {
-        TrajectoryResult(points2D: points2D, isLinear: true, linearityR2: 0, maxAngularAccelerationDegPerS2: 0, angularVelocitiesDegPerS: [], estimatedGForce: 0, gForceConfidence: 0, exceedsHumanTolerance: false, curvatureEvents: [], isZigzagPattern: false, directionReversalCount: 0)
+        TrajectoryResult(points2D: points2D, isLinear: true, linearityR2: 0, angularVelocitiesDegPerS: [], estimatedGForce: 0, gForceConfidence: 0, exceedsHumanTolerance: false, curvatureEvents: [], isZigzagPattern: false, directionReversalCount: 0)
     }
 }

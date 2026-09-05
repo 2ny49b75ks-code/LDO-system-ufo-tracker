@@ -33,7 +33,6 @@ struct AnalysisSession: Identifiable, Equatable {
     var hasImpossibleGForce: Bool = false
     var estimatedGForce: Double = 0
     var gForceConfidence: Double = 0         // faible sans mesure de distance fiable
-    var maxAngularAccelerationDegPerS2: Double = 0  // mesure indépendante de la distance, toujours fiable
     var curvatureEvents: [CurvatureEvent] = []
     var isZigzagTrajectory: Bool = false      // alternance gauche-droite (voir TrajectoryCalculator)
     var trajectoryReversalCount: Int = 0
@@ -232,7 +231,6 @@ final class AnalysisEngine {
         session.estimatedGForce = traj.estimatedGForce
         session.gForceConfidence = traj.gForceConfidence
         session.hasImpossibleGForce = traj.exceedsHumanTolerance
-        session.maxAngularAccelerationDegPerS2 = traj.maxAngularAccelerationDegPerS2
         session.curvatureEvents = traj.curvatureEvents
         session.isZigzagTrajectory = traj.isZigzagPattern
         session.trajectoryReversalCount = traj.directionReversalCount
