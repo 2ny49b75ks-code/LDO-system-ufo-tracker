@@ -201,8 +201,23 @@ final class AnalysisEngine {
         // deuxième méthode indépendante (voir le commentaire dans DistanceEstimator). La trajectoire
         // complète (avec forces G) est recalculée à l'étape 4 une fois la distance réconciliée connue.
         let preliminaryTrajectory = trajectoryCalculator.computeTrajectory(detections: detections, frames: frames, estimatedDistanceMeters: nil)
-        let averageAngularVelocity = preliminaryTrajectory.angularVelocitiesDegPerS.isEmpty ? nil :
-            preliminaryTrajectory.angularVelocitiesDegPerS.map { $0.value }.reduce(0, +) / Double(preliminaryTrajectory.angularVelocitiesDegPerS.count)
+        // BUG CORRIGÉ (revue de code du 2026-08-27) : une simple MOYENNE arithmétique sur les
+        // échantillons BRUTS (non lissés, non corroborés) surestime systématiquement la vitesse
+        // angulaire réelle — chaque échantillon est une magnitude non signée (voir `angularVelocity`),
+        // le bruit de suivi ne peut donc que la GONFLER, jamais l'annuler par compensation +/-. Tout
+        // autre consommateur de ce même signal dans le pipeline (virages, zigzag, forces G) élargit
+        // d'abord la fenêtre et/ou filtre le bruit avant de s'y fier — ici, une vitesse gonflée fait
+        // chuter la distance triangulée par vitesse en dessous de la distance par taille, faisant
+        // échouer à tort le recoupement (`distanceCrossCheckAgrees = false`) sur un avion pourtant
+        // ordinaire, ce qui bloque les règles de verdict « objet connu, 0% » qui l'exigent. La
+        // MÉDIANE, robuste à un écart de suivi isolé sur une seule image (le bruit le plus courant
+        // ici), remplace la moyenne sans exiger de nouveau paramètre à calibrer.
+        let averageAngularVelocity: Double? = {
+            let values = preliminaryTrajectory.angularVelocitiesDegPerS.map { $0.value }.sorted()
+            guard !values.isEmpty else { return nil }
+            let mid = values.count / 2
+            return values.count % 2 == 0 ? (values[mid - 1] + values[mid]) / 2 : values[mid]
+        }()
 
         // Étape 8 (avancée ici, voir DistanceEstimator.swift) : triangulation angulaire à partir
         // d'une taille réelle supposée selon la forme détectée (pas de LiDAR, portée trop courte),
@@ -224,7 +239,7 @@ final class AnalysisEngine {
         report(3, "Calcul de la trajectoire…")
         // Étape 4 : trajectoire réelle (angulaire, corrigée du mouvement de la caméra) + forces G
         // (voir TrajectoryCalculator.swift).
-        let traj = trajectoryCalculator.computeTrajectory(detections: detections, frames: frames, estimatedDistanceMeters: reliableDistance)
+        let traj = trajectoryCalculator.computeTrajectory(detections: detections, frames: frames, estimatedDistanceMeters: reliableDistance, distanceConfidence: dist.confidence)
         session.trajectory = traj.points2D
         session.isLinear = traj.isLinear
         session.linearityR2 = traj.linearityR2

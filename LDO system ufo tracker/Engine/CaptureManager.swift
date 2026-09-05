@@ -50,6 +50,14 @@ final class CaptureManager: NSObject, ObservableObject {
     private let locationProvider = LocationProvider()
 
     private var frameBuffer: [CapturedFrame] = []
+    /// BUG CORRIGÉ (revue de code du 2026-08-27) : `session(_:didUpdate:)` (ARSessionDelegate) est
+    /// appelée par ARKit sur sa PROPRE file d'arrière-plan (aucune `session.delegateQueue` n'est
+    /// définie ici, donc pas la file principale), alors que `toggleRecording()`/`storeRecording`
+    /// vident/lisent `frameBuffer` sur la file principale (déclenchés par l'UI) — une mutation d'un
+    /// `Array` Swift depuis deux files sans synchronisation, comportement indéfini pouvant perdre/
+    /// dupliquer des images ou planter. Toutes les lectures/écritures passent maintenant par cette
+    /// file sérielle dédiée.
+    private let frameBufferQueue = DispatchQueue(label: "com.ldo.frameBufferQueue")
 
     // Cadence du buffer d'ANALYSE (pose ARKit + image en mémoire, voir `storeRecording`) : ~12
     // images/seconde suffit largement pour le mouvement/la trajectoire (l'analyse ré-échantillonne

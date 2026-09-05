@@ -229,12 +229,24 @@ final class MotionDetector {
         // (×4 environ sur la traînée réelle confirmée). On exige donc une croissance significative de
         // la hauteur de la boîte à travers le groupe pour la retenir comme traînée plutôt qu'un
         // artefact fixe de la scène.
-        let heights = bestCluster.map { Double($0.box.height) }
-        guard let minHeight = heights.min(), let maxHeight = heights.max(), minHeight > 0,
-              maxHeight / minHeight >= 1.8 else { return [] }
+        //
+        // BUG CORRIGÉ (revue de code du 2026-08-27) : comparer le MIN et le MAX globaux du groupe ne
+        // vérifie PAS une vraie tendance de croissance — l'ordre temporel n'intervient pas. Une seule
+        // image où le remplissage par diffusion fusionne par erreur avec un nuage voisin produit un
+        // pic isolé qui fait passer ce test même pour un artefact fixe (sans vraie croissance), et une
+        // traînée qui RÉTRÉCIT (zoom arrière, dissipation) passerait le test de façon identique à une
+        // traînée qui s'allonge. On compare maintenant la hauteur MOYENNE du premier tiers du groupe
+        // (trié chronologiquement) à celle du dernier tiers — une vraie tendance début->fin, pas un
+        // simple écart ponctuel entre deux images quelconques.
+        let sortedCluster = bestCluster.sorted { $0.timestamp < $1.timestamp }
+        let third = max(1, sortedCluster.count / 3)
+        let earlyHeights = sortedCluster.prefix(third).map { Double($0.box.height) }
+        let lateHeights = sortedCluster.suffix(third).map { Double($0.box.height) }
+        let earlyAverage = earlyHeights.reduce(0, +) / Double(earlyHeights.count)
+        let lateAverage = lateHeights.reduce(0, +) / Double(lateHeights.count)
+        guard earlyAverage > 0, lateAverage / earlyAverage >= 1.8 else { return [] }
 
-        let detections = bestCluster
-            .sorted { $0.timestamp < $1.timestamp }
+        let detections = sortedCluster
             .map { Detection(boundingBox: $0.box, timestamp: $0.timestamp) }
         return [TrackedObject(id: UUID(), detections: detections)]
     }

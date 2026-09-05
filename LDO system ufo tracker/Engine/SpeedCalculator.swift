@@ -148,10 +148,14 @@ final class SpeedCalculator {
     /// détection isolé sans écraser une vraie variation soutenue sur plusieurs images. Voir le
     /// commentaire au point d'appel.
     private static func robustPeak(_ values: [Double]) -> Double {
-        guard values.count >= 2 else { return values.first ?? 0 }
+        // BUG CORRIGÉ (revue de code du 2026-08-27) : cette copie omettait le `abs()` déjà présent
+        // dans l'implémentation jumelle de `TrajectoryCalculator.robustPeak` (même algorithme,
+        // dupliqué dans les deux fichiers) — sans lui, une série qui peut aller au négatif ferait
+        // gagner la paire la PLUS négative au lieu du plus grand pic en magnitude.
+        guard values.count >= 2 else { return values.first.map { abs($0) } ?? 0 }
         var corroboratedPeaks: [Double] = []
         for i in 1..<values.count {
-            corroboratedPeaks.append(min(values[i-1], values[i]))
+            corroboratedPeaks.append(min(abs(values[i-1]), abs(values[i])))
         }
         return corroboratedPeaks.max() ?? 0
     }

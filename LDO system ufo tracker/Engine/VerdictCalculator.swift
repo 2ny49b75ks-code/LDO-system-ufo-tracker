@@ -267,14 +267,21 @@ final class VerdictCalculator {
                 return elongation > 2.5
             }()
 
-            if isIrregularFlicker && isErraticTrajectory {
-                cappedScore = max(cappedScore, 85)
-                factors.append("Règle Mode Nuit : lumière scintillante de façon irrégulière + trajectoire variable/courbe — signal jugé quasi certain d'objet volant non identifié")
-            } else if hasTrailShape && isContinuousOrSlightlyCurved {
-                // Priorité sur la règle avion/drone/satellite ci-dessous : la traînée est une
-                // signature visuelle plus spécifique qu'une simple lumière stable.
+            // BUG CORRIGÉ (revue de code du 2026-08-27) : `isErraticTrajectory` (R² < 0,5 OU zigzag)
+            // et `isContinuousOrSlightlyCurved` (pas de zigzag ET R² > 0,3) se recoupent pour un R²
+            // entre 0,3 et 0,5 sans zigzag — une VRAIE météorite (traînée allongée + luminosité
+            // naturellement irrégulière pendant sa combustion) tombant dans cette zone déclenchait la
+            // règle OVNI ci-dessous (vérifiée en premier) plutôt que la règle météorite, l'inverse de
+            // l'intention déjà documentée ci-dessous (« priorité sur la règle... »). La règle traînée
+            // (plus spécifique) est donc désormais vérifiée AVANT la règle scintillement+erratique.
+            if hasTrailShape && isContinuousOrSlightlyCurved {
+                // Priorité sur les règles OVNI/avion-drone-satellite ci-dessous : la traînée est une
+                // signature visuelle plus spécifique qu'une simple lumière stable OU un scintillement.
                 cappedScore = min(cappedScore, 10)
                 factors.append("Règle Mode Nuit : traînée lumineuse allongée derrière l'objet + trajectoire continue (légèrement courbe ou non) — signal jugé quasi certain (90%) de météorite")
+            } else if isIrregularFlicker && isErraticTrajectory {
+                cappedScore = max(cappedScore, 85)
+                factors.append("Règle Mode Nuit : lumière scintillante de façon irrégulière + trajectoire variable/courbe — signal jugé quasi certain d'objet volant non identifié")
             } else if isSteadyOrRegularBlink && isStableTrajectory {
                 cappedScore = min(cappedScore, 15)
                 let objectKind = session.illuminationPattern == "Continue" ? "un avion ou un satellite" : "un avion, un drone ou un satellite"

@@ -111,9 +111,19 @@ enum VideoFrameExtractor {
         return frames
     }
 
+    /// BUG CORRIGÉ (revue de code du 2026-08-27) : `timestamp` ici est RELATIF au fichier vidéo (0…
+    /// durée, quelques secondes), alors que `poses[].timestamp` est le `ARFrame.timestamp` BRUT,
+    /// c'est-à-dire un temps ABSOLU depuis le démarrage de l'appareil (typiquement des dizaines de
+    /// milliers de secondes) — voir `CaptureManager.storeRecording`, qui persiste ce timestamp brut
+    /// sans le recaler. Comparer directement les deux revenait à toujours choisir la même pose (la
+    /// première) pour CHAQUE image extraite d'un enregistrement LIVE ré-analysé depuis « Mes
+    /// enregistrements », car `abs(pose.timestamp - t) ≈ pose.timestamp` pour toutes les poses. On
+    /// recale donc les timestamps de pose sur celui de la première pose (repère 0 = début de la
+    /// session d'écriture vidéo, voir `writer.startSession(atSourceTime:)` dans `CaptureManager`,
+    /// démarrée avec le timestamp de la toute première image capturée) avant de comparer.
     private static func nearestPose(to timestamp: Double, in poses: [PersistedFramePose]) -> PersistedFramePose? {
-        guard !poses.isEmpty else { return nil }
-        return poses.min { abs($0.timestamp - timestamp) < abs($1.timestamp - timestamp) }
+        guard let firstTimestamp = poses.map(\.timestamp).min() else { return nil }
+        return poses.min { abs(($0.timestamp - firstTimestamp) - timestamp) < abs(($1.timestamp - firstTimestamp) - timestamp) }
     }
 }
 

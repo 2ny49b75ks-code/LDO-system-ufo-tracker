@@ -70,7 +70,14 @@ final class SessionAnalyzer: ObservableObject {
             }
 
             DispatchQueue.main.async {
-                self?.isAnalyzing = false
+                // BUG CORRIGÉ (revue de code du 2026-08-27) : `completion`/la capture d'écran
+                // ci-dessous s'exécutaient sans condition même si `self` (donc l'écran qui a lancé
+                // l'analyse) avait déjà disparu — pipeline de 35s+ (extraction, analyse complète,
+                // sémaphores son/Photos) largement le temps qu'un utilisateur quitte l'écran avant la
+                // fin. Risquait de rejouer le bug déjà corrigé une fois (rendu MapKit hors-écran en
+                // concurrence avec le rendu à l'écran) ou d'invoquer une navigation obsolète.
+                guard let self else { return }
+                self.isAnalyzing = false
                 completion(result)
 
                 // Capture d'écran de l'écran de résultats complet (mesures, cartes, verdict) —

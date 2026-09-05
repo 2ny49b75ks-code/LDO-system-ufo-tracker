@@ -28,7 +28,8 @@ final class TrajectoryCalculator {
     func computeTrajectory(
         detections: [Detection],
         frames: [CapturedFrame],
-        estimatedDistanceMeters: Double?
+        estimatedDistanceMeters: Double?,
+        distanceConfidence: Double = 0
     ) -> TrajectoryResult {
         guard detections.count >= 3 else {
             return TrajectoryResult.insufficientData(points2D: detections.map { center($0.boundingBox) })
@@ -75,7 +76,7 @@ final class TrajectoryCalculator {
         //    l'amplitude reste largement au-dessus du seuil même après une moyenne glissante sur 3
         //    points — contrairement au bruit de gigotement, dont l'amplitude est du même ordre que la
         //    fenêtre de lissage elle-même.
-        let curvatureEvents = detectSharpTurns(smoothed, distanceMeters: estimatedDistanceMeters)
+        let curvatureEvents = detectSharpTurns(smoothed, distanceMeters: estimatedDistanceMeters, distanceConfidence: distanceConfidence)
 
         // 6. Estimation des forces G — ANCRÉE SUR LES VIRAGES RÉELLEMENT DÉTECTÉS (`curvatureEvents`
         //    ci-dessus, seuil >30° sur une fenêtre de 3 échantillons), PAS sur le pic brut de la double
@@ -92,9 +93,9 @@ final class TrajectoryCalculator {
         //    physiquement correcte — pas sur un chiffre dérivé du bruit de suivi.
         let gResult: (value: Double, confidence: Double)
         if let strongestTurn = curvatureEvents.max(by: { $0.estimatedGForce < $1.estimatedGForce }) {
-            gResult = (strongestTurn.estimatedGForce, estimatedDistanceMeters != nil ? 0.35 : 0)
+            gResult = (strongestTurn.estimatedGForce, strongestTurn.gForceConfidence)
         } else if let distance = estimatedDistanceMeters, distance > 0 {
-            gResult = (1.0, 0.5)   // aucun virage brusque confirmé : vol en palier, charge ≈ 1 G.
+            gResult = (1.0, distanceConfidence)   // aucun virage brusque confirmé : vol en palier, charge ≈ 1 G.
         } else {
             gResult = (0, 0)       // pas de distance fiable : on ne prétend aucune valeur en G.
         }
@@ -178,8 +179,21 @@ final class TrajectoryCalculator {
             cy = imageHeight / 2
         }
 
-        // Direction dans le repère caméra (axe Z vers l'avant).
-        let cameraSpace = SIMD3<Double>((pixelX - cx) / fx, (pixelY - cy) / fy, 1.0)
+        // Direction dans le repère caméra LOCAL D'ARKIT : X à droite, Y VERS LE HAUT, l'avant de la
+        // caméra pointe vers -Z (convention ARKit standard, confirmée par Apple et déjà utilisée
+        // correctement dans `DistanceEstimator.altitudeFromDistance`, qui calcule sa propre direction
+        // « avant » via `-cameraTransform.columns.2`).
+        //
+        // BUG CORRIGÉ (revue de code du 2026-08-27) : ce calcul utilisait auparavant `pixelY` tel
+        // quel (repère image, Y VERS LE BAS) et Z=+1 comme « avant » — une convention vision par
+        // ordinateur cohérente EN ELLE-MÊME, mais INCOMPATIBLE avec la matrice de rotation d'ARKit
+        // utilisée juste en dessous (`rotation * normalizedCameraSpace`), qui suppose Y vers le haut
+        // et -Z vers l'avant. Résultat : une direction inversée par rapport à celle réellement visée
+        // par la caméra dès que `cameraTransform` est disponible (tout enregistrement LIVE) — corrompt
+        // silencieusement la correspondance astronomique (Vénus/Soleil/étoiles) et toute compensation
+        // du mouvement de caméra pendant un panoramique. Y inversé (image Y-bas -> caméra Y-haut) et
+        // Z=-1 (avant réel d'ARKit) pour retrouver la convention réellement utilisée par la rotation.
+        let cameraSpace = SIMD3<Double>((pixelX - cx) / fx, -(pixelY - cy) / fy, -1.0)
         let normalizedCameraSpace = simd_normalize(cameraSpace)
 
         guard let cameraTransform = frame.cameraTransform else {
@@ -252,7 +266,14 @@ final class TrajectoryCalculator {
 
         let start = samples.first!.direction
         let end = samples.last!.direction
-        let axis = simd_normalize(end - start == SIMD3<Double>(0,0,0) ? SIMD3<Double>(1,0,0) : end - start)
+        // BUG CORRIGÉ (revue de code du 2026-08-27) : l'égalité EXACTE `== SIMD3(0,0,0)` ne détectait
+        // que le cas bit-à-bit identique, pas un déplacement net minuscule mais non nul — précisément
+        // le cas d'un objet quasi stationnaire/oscillant (un des scénarios que LDO doit distinguer
+        // avec soin). `simd_normalize` sur ce vecteur minuscule amplifie alors le bruit de détection en
+        // un axe de référence essentiellement arbitraire, rendant le R² de linéarité affiché instable
+        // pour ce cas précis. Seuil `< epsilon` plutôt qu'une égalité exacte.
+        let displacementMagnitude = simd_length(end - start)
+        let axis = simd_normalize(displacementMagnitude < 1e-4 ? SIMD3<Double>(1,0,0) : end - start)
 
         // Somme des écarts perpendiculaires à la droite start->end, normalisée par l'étendue totale.
         var totalDeviation = 0.0
@@ -310,7 +331,7 @@ final class TrajectoryCalculator {
     /// sur cette fenêtre ; un jitter de suivi ne l'est plus.
     private let curvatureBaselineSeconds: Double = 0.25
 
-    private func detectSharpTurns(_ samples: [AngularSample], distanceMeters: Double?) -> [CurvatureEvent] {
+    private func detectSharpTurns(_ samples: [AngularSample], distanceMeters: Double?, distanceConfidence: Double) -> [CurvatureEvent] {
         guard samples.count >= 3 else { return [] }
 
         let totalDuration = (samples.last?.timestamp ?? 0) - (samples.first?.timestamp ?? 0)
@@ -330,16 +351,31 @@ final class TrajectoryCalculator {
             // mesurés sur la base élargie ci-dessus (pas un simple pas d'une image à l'autre).
             guard turnAngleDeg > 30 else { continue }
 
-            let dt = samples[i + strideCount].timestamp - samples[i - strideCount].timestamp
+            let dt1 = samples[i].timestamp - samples[i - strideCount].timestamp
+            let dt2 = samples[i + strideCount].timestamp - samples[i].timestamp
+            let dt = dt1 + dt2
+            guard dt1 > 0, dt2 > 0 else { continue }
+
+            // Vitesse angulaire de la LIGNE DE VISÉE (rad/s, pas le taux de virage ci-dessous) sur
+            // chaque moitié de fenêtre — sert à reconstituer une vitesse tangentielle réelle dans
+            // `estimateGForce` (voir son commentaire). `simd_length(v1)`/`v2` est la longueur de corde
+            // entre deux directions UNITAIRES, une bonne approximation de l'angle en radians balayé
+            // sur ce court intervalle pour un petit angle.
+            let lineOfSightAngularVelocityRadPerS = (simd_length(v1) / dt1 + simd_length(v2) / dt2) / 2
+            let turnRateRadPerS = turnAngleRad / dt   // taux de changement de cap, PAS une accélération.
+
             let gEstimate = estimateGForce(
-                maxAngularAccelerationDegPerS2: dt > 0 ? turnAngleDeg / dt : 0,
-                distanceMeters: distanceMeters
+                lineOfSightAngularVelocityRadPerS: lineOfSightAngularVelocityRadPerS,
+                turnRateRadPerS: turnRateRadPerS,
+                distanceMeters: distanceMeters,
+                distanceConfidence: distanceConfidence
             )
 
             events.append(CurvatureEvent(
                 timestamp: samples[i].timestamp,
                 turnAngleDegrees: turnAngleDeg,
-                estimatedGForce: gEstimate.value
+                estimatedGForce: gEstimate.value,
+                gForceConfidence: gEstimate.confidence
             ))
         }
         return events
@@ -347,19 +383,31 @@ final class TrajectoryCalculator {
 
     // MARK: - 6. Estimation des forces G
 
+    /// BUG CORRIGÉ (revue de code du 2026-08-27) : l'ancienne formule recevait le TAUX DE VIRAGE
+    /// (`turnAngleDeg / dt`, une vitesse angulaire, deg/s) directement dans un paramètre nommé
+    /// « accélération angulaire » (deg/s²) et le multipliait par la distance comme si c'était rad/s² —
+    /// un mélange d'unités qui calculait en réalité une VITESSE (distance × rad/s = m/s), affichée à
+    /// tort comme une accélération (m/s²). Pouvait reproduire le même genre de G fantaisistes que les
+    /// bugs déjà corrigés (78,5 G, 13 600 G), via une cause différente, jusqu'ici non détectée.
+    ///
+    /// Formule corrigée : accélération latérale (m/s²) = distance (m) × vitesse angulaire de la ligne
+    /// de visée (rad/s) × taux de virage (rad/s). Dérivation : pour un déplacement perpendiculaire à
+    /// la ligne de visée, la vitesse réelle tangentielle v ≈ distance × vitesse_angulaire_ligne_de_visée
+    /// (même relation que celle utilisée par `SpeedCalculator` pour estimer la vitesse à partir de la
+    /// distance) ; l'accélération centripète pendant un virage est alors a = v × taux_de_virage —
+    /// dimensionnellement [m]×[rad/s]×[rad/s] = [m/s²], contrairement à l'ancienne formule.
     private func estimateGForce(
-        maxAngularAccelerationDegPerS2: Double,
-        distanceMeters: Double?
+        lineOfSightAngularVelocityRadPerS: Double,
+        turnRateRadPerS: Double,
+        distanceMeters: Double?,
+        distanceConfidence: Double
     ) -> (value: Double, confidence: Double) {
         guard let distance = distanceMeters, distance > 0 else {
             // Sans distance fiable, on ne calcule PAS de valeur en G : la convertir sans distance
             // donnerait un chiffre pseudo-précis mais physiquement arbitraire.
             return (0, 0)
         }
-        let angularAccelRadPerS2 = maxAngularAccelerationDegPerS2 * .pi / 180
-        // Approximation : accélération latérale (m/s²) ≈ distance (m) × accélération angulaire (rad/s²)
-        // valable pour un mouvement perpendiculaire à la ligne de visée — cas le plus courant en observation manuelle.
-        let lateralAcceleration = distance * angularAccelRadPerS2
+        let lateralAcceleration = distance * lineOfSightAngularVelocityRadPerS * turnRateRadPerS
         let lateralG = lateralAcceleration / 9.81
 
         // Charge totale en G (facteur de charge, « load factor » en aéronautique) — PAS seulement la
@@ -373,11 +421,13 @@ final class TrajectoryCalculator {
         // sur un avion volant pourtant presque parfaitement droit.
         let totalG = (lateralG * lateralG + 1).squareRoot()
 
-        // Confiance : directement liée à la confiance de l'estimation de distance elle-même
-        // (fournie par l'étape 8). Ici on plafonne prudemment car aucune mesure directe de distance
-        // n'est disponible pour un objet aérien lointain (distance par triangulation uniquement).
-        let confidence = 0.35
-        return (totalG, confidence)
+        // Confiance : directement liée à la confiance RÉELLE de l'estimation de distance (fournie par
+        // l'étape 8, `DistanceEstimator`). BUG CORRIGÉ (revue de code du 2026-08-27) : ce commentaire
+        // était déjà présent mais faux dans les faits — la confiance était codée en dur à 0,35 sans
+        // jamais lire la vraie valeur, rendant le seuil `confidence > 0.3` de `exceedsHumanTolerance`
+        // incapable de distinguer une distance bien recoupée d'une distance que le recoupement
+        // vitesse/taille avait lui-même signalée comme peu fiable.
+        return (totalG, distanceConfidence)
     }
 
     private func center(_ box: CGRect) -> CGPoint {
@@ -469,6 +519,7 @@ struct CurvatureEvent {
     let timestamp: TimeInterval
     let turnAngleDegrees: Double
     let estimatedGForce: Double
+    let gForceConfidence: Double
 }
 
 struct TrajectoryResult {

@@ -162,7 +162,15 @@ enum OverlayRenderer {
 
         let semaphore = DispatchSemaphore(value: 0)
         export.exportAsynchronously { semaphore.signal() }
-        _ = semaphore.wait(timeout: .now() + 30)
+        let timedOut = semaphore.wait(timeout: .now() + 30) == .timedOut
+        // BUG CORRIGÉ (revue de code du 2026-08-27) : sans `cancelExport()`, un export encore en
+        // cours après le délai continuait à s'exécuter en arrière-plan (l'export s'auto-retient) —
+        // du CPU/de la batterie gaspillés à ré-encoder toute la vidéo pour un résultat qui sera
+        // jeté, plus un fichier `.mov` temporaire orphelin que rien ne référence pour le supprimer.
+        if timedOut {
+            export.cancelExport()
+            try? FileManager.default.removeItem(at: outputURL)
+        }
 
         return export.status == .completed ? outputURL : sourceURL
     }
@@ -201,7 +209,20 @@ enum OverlayRenderer {
             }
 
             let overlaidImage = OverlayRenderer.draw(on: sourceCGImage, session: instruction.session)
-            ciContext.render(CIImage(cgImage: overlaidImage), to: outputBuffer)
+            // BUG CORRIGÉ (revue de code du 2026-08-27) : `ciContext.render(_:to:)` ne redimensionne
+            // PAS l'image pour remplir le buffer de destination — il la dessine à sa taille NATIVE,
+            // pixel pour pixel (même bug que `CIContext.render(toBitmap:)`, déjà rencontré et corrigé
+            // ailleurs cette session). `outputBuffer` est plafonné à 1920px (`maxRenderDimension` ci-
+            // dessus) alors qu'`overlaidImage` reste à la résolution SOURCE (jusqu'à 4K) — sans mise à
+            // l'échelle explicite, l'export d'une vidéo 4K montrait un coin recadré/zoomé de chaque
+            // image plutôt que la scène complète réduite, alors que les 3 photos (qui utilisent le
+            // chemin d'agrandissement correct de `PhotoComposer`) restaient correctes.
+            let ciOverlaid = CIImage(cgImage: overlaidImage)
+            let outputWidth = CGFloat(CVPixelBufferGetWidth(outputBuffer))
+            let outputHeight = CGFloat(CVPixelBufferGetHeight(outputBuffer))
+            let fitScale = min(outputWidth / ciOverlaid.extent.width, outputHeight / ciOverlaid.extent.height)
+            let scaledOverlaid = ciOverlaid.transformed(by: CGAffineTransform(scaleX: fitScale, y: fitScale))
+            ciContext.render(scaledOverlaid, to: outputBuffer)
 
             asyncVideoCompositionRequest.finish(withComposedVideoFrame: outputBuffer)
         }

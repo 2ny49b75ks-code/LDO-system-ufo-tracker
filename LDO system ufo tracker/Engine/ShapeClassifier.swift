@@ -130,11 +130,24 @@ final class ShapeClassifier {
         let extent = image.extent
         guard extent.width > 0, extent.height > 0 else { return 0 }
 
+        // BUG CORRIGÉ (revue de code du 2026-08-27) : `ciContext.render(toBitmap:)` NE redimensionne
+        // PAS l'image pour remplir un buffer plus petit — il rend `bounds` pixel pour pixel (même bug,
+        // déjà trouvé et corrigé ailleurs cette session dans `MotionDetector.contrailBoundingBox`, voir
+        // son commentaire). `bounds` passait ici l'étendue RÉELLE et non redimensionnée du recadrage —
+        // presque toujours plus grande que 24×24px — dans un tampon fixe de 24*24*4 = 2304 octets,
+        // provoquant une écriture hors limites dans ce tableau Swift. Mise à l'échelle explicite
+        // ajoutée avant le rendu, comme dans `contrailBoundingBox`.
         let sampleSize = 24
+        let scale = CGAffineTransform(
+            scaleX: CGFloat(sampleSize) / extent.width,
+            y: CGFloat(sampleSize) / extent.height
+        )
+        let scaled = image.transformed(by: scale)
+
         var bitmap = [UInt8](repeating: 0, count: sampleSize * sampleSize * 4)
         ciContext.render(
-            image, toBitmap: &bitmap, rowBytes: sampleSize * 4,
-            bounds: CGRect(x: extent.minX, y: extent.minY, width: extent.width, height: extent.height),
+            scaled, toBitmap: &bitmap, rowBytes: sampleSize * 4,
+            bounds: CGRect(x: 0, y: 0, width: sampleSize, height: sampleSize),
             format: .RGBA8, colorSpace: nil
         )
 
@@ -337,17 +350,32 @@ final class ShapeClassifier {
               let outputImage = filter.outputImage else {
             return (0, (0, 0, 0))
         }
+        // BUG CORRIGÉ (revue de code du 2026-08-27) : la sortie 1×1 de CIAreaAverage se situe à
+        // L'ORIGINE DE L'ÉTENDUE D'ENTRÉE (ici, le coin du recadrage), PAS à (0,0) — un rendu vers
+        // (0,0,1,1) échantillonnait donc presque toujours un pixel vide/transparent plutôt que le
+        // résultat réel, faisant systématiquement retomber cette fonction sur son cas d'échec
+        // (luminosité 0, couleur noire), indiscernable d'une vraie mesure. `IlluminationAnalyzer`
+        // n'a AUCUNE autre source de données : ce bug faisait retomber le motif de clignotement sur
+        // "Continue" et la température de couleur sur 6500K en permanence, peu importe la vidéo.
         var bitmap = [UInt8](repeating: 0, count: 4)
-        ciContext.render(outputImage, toBitmap: &bitmap, rowBytes: 4, bounds: CGRect(x: 0, y: 0, width: 1, height: 1), format: .RGBA8, colorSpace: nil)
+        ciContext.render(outputImage, toBitmap: &bitmap, rowBytes: 4, bounds: outputImage.extent, format: .RGBA8, colorSpace: nil)
         let r = Double(bitmap[0]) / 255, g = Double(bitmap[1]) / 255, b = Double(bitmap[2]) / 255
         let brightness = 0.2126 * r + 0.7152 * g + 0.0722 * b
         return (brightness, (r, g, b))
     }
 
+    /// Convertit une boîte Vision normalisée (origine bas-gauche, Y croissant vers le haut) en un
+    /// rectangle en pixels pour recadrer un `CIImage` — qui utilise EXACTEMENT la même convention
+    /// (origine bas-gauche), donc aucune inversion d'axe Y n'est nécessaire ici, juste une mise à
+    /// l'échelle. BUG CORRIGÉ (revue de code du 2026-08-27) : une inversion `1 - y` était appliquée à
+    /// tort, comme si la destination était un repère haut-gauche (UIKit/CGImage raster) — pour un
+    /// objet pas exactement centré verticalement, ça recadrait la région symétriquement opposée dans
+    /// l'image (le sol au lieu du ciel, par ex.), faussant `contourIrregularity` et `averageLuminance`
+    /// à la source, et donc toute l'analyse d'illumination qui en dépend.
     private func pixelRect(for normalizedBox: CGRect, imageSize: CGSize) -> CGRect {
         CGRect(
             x: normalizedBox.origin.x * imageSize.width,
-            y: (1 - normalizedBox.origin.y - normalizedBox.height) * imageSize.height,
+            y: normalizedBox.origin.y * imageSize.height,
             width: normalizedBox.width * imageSize.width,
             height: normalizedBox.height * imageSize.height
         )
