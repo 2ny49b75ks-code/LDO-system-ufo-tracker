@@ -11,7 +11,7 @@ import simd
 /// Une image capturée par l'onglet LIVE conserve sa pose ARKit (position + orientation de la
 /// caméra, matrice intrinsèque) dans ce fichier annexe au format JSON, à côté de la vidéo —
 /// nécessaire pour la triangulation angulaire même en ré-analyse différée, voir `CapturedFrame`.
-struct PersistedFramePose: Codable {
+struct PersistedFramePose: Codable, Timestamped {
     let timestamp: Double
     let transform: [Float]     // simd_float4x4, colonnes concaténées (16 éléments)
     let intrinsics: [Float]    // simd_float3x3, colonnes concaténées (9 éléments)

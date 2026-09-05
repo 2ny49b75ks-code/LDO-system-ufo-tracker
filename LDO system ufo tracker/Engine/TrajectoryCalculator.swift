@@ -38,7 +38,7 @@ final class TrajectoryCalculator {
         // 1. Pour chaque détection, retrouver la pose caméra la plus proche en temps
         //    et convertir la position 2D (pixels/normalisé) en direction 3D réelle dans le ciel.
         let angularSamples: [AngularSample] = detections.compactMap { detection in
-            guard let frame = nearestFrame(to: detection.timestamp, in: frames),
+            guard let frame = frames.nearest(to: detection.timestamp),
                   let direction = rayDirection(for: detection.boundingBox, frame: frame)
             else { return nil }
             return AngularSample(direction: direction, timestamp: detection.timestamp)
@@ -211,10 +211,6 @@ final class TrajectoryCalculator {
         return simd_normalize(rotation * normalizedCameraSpace)
     }
 
-    private func nearestFrame(to timestamp: TimeInterval, in frames: [CapturedFrame]) -> CapturedFrame? {
-        frames.min(by: { abs($0.timestamp - timestamp) < abs($1.timestamp - timestamp) })
-    }
-
     /// Azimut/élévation réels (degrés) d'un échantillon représentatif de la séquence — utilisé pour
     /// comparer la direction observée de l'objet à la position calculée d'un astre connu (voir
     /// `CelestialPositionCalculator`/`VerdictCalculator`). Repose sur la boussole d'ARKit
@@ -232,7 +228,7 @@ final class TrajectoryCalculator {
     func observedAzimuthElevation(detections: [Detection], frames: [CapturedFrame]) -> (azimuthDegrees: Double, elevationDegrees: Double)? {
         guard !detections.isEmpty else { return nil }
         let midDetection = detections[detections.count / 2]
-        guard let frame = nearestFrame(to: midDetection.timestamp, in: frames),
+        guard let frame = frames.nearest(to: midDetection.timestamp),
               let direction = rayDirection(for: midDetection.boundingBox, frame: frame)
         else { return nil }
 
@@ -245,16 +241,10 @@ final class TrajectoryCalculator {
     // MARK: - 2. Lissage
 
     private func smooth(_ samples: [AngularSample], window: Int) -> [AngularSample] {
-        guard samples.count > window else { return samples }
-        var result: [AngularSample] = []
-        for i in 0..<samples.count {
-            let lo = max(0, i - window / 2)
-            let hi = min(samples.count - 1, i + window / 2)
-            let slice = samples[lo...hi]
-            let avgDir = simd_normalize(slice.reduce(SIMD3<Double>(0,0,0)) { $0 + $1.direction } / Double(slice.count))
-            result.append(AngularSample(direction: avgDir, timestamp: samples[i].timestamp))
+        centeredMovingAverage(samples, window: window) { i, slice in
+            let avgDir = simd_normalize(slice.reduce(SIMD3<Double>(0, 0, 0)) { $0 + $1.direction } / Double(slice.count))
+            return AngularSample(direction: avgDir, timestamp: samples[i].timestamp)
         }
-        return result
     }
 
     // MARK: - 3. Linéarité
@@ -315,28 +305,10 @@ final class TrajectoryCalculator {
 
     // MARK: - 5. Virages brusques
 
-    /// Base de comparaison (secondes) pour les vecteurs de déplacement `v1`/`v2` ci-dessous, PAS un
-    /// simple pas d'une image à l'autre. BUG corrigé (2026-08-25, découvert via un harnais de test
-    /// numérique reproduisant le scénario réel signalé par Jean-David : un avion de ligne à ~7 km,
-    /// vitesse mesurée correcte à 539 km/h, déclenchait encore ~13 600 G après un premier correctif
-    /// qui ancrait pourtant déjà le G sur ces "virages") : comparer deux échantillons consécutifs
-    /// (~1/12s d'écart) rend `angleBetween(v1,v2)` extrêmement instable dès que le déplacement RÉEL
-    /// par image est du même ordre de grandeur que le bruit de suivi — cas typique d'un objet
-    /// lointain qui bouge lentement à l'écran malgré une vraie vitesse élevée (justement le cas d'un
-    /// avion de ligne à plusieurs km). Le bruit de détection d'une image à l'autre suffisait alors à
-    /// produire des "virages" fantômes de plus de 30°, même sur une trajectoire globalement quasi
-    /// parfaite (R² > 0.97). Élargir la base à ~0.25s accumule le vrai signal de déplacement tout en
-    /// moyennant le bruit indépendant d'une image à l'autre — un vrai virage brusque (le genre de
-    /// changement de direction qui définit un comportement de vol atypique) reste largement détecté
-    /// sur cette fenêtre ; un jitter de suivi ne l'est plus.
-    private let curvatureBaselineSeconds: Double = 0.25
-
     private func detectSharpTurns(_ samples: [AngularSample], distanceMeters: Double?, distanceConfidence: Double) -> [CurvatureEvent] {
         guard samples.count >= 3 else { return [] }
 
-        let totalDuration = (samples.last?.timestamp ?? 0) - (samples.first?.timestamp ?? 0)
-        let averageDt = samples.count > 1 ? totalDuration / Double(samples.count - 1) : 0
-        let strideCount = averageDt > 0 ? max(1, Int((curvatureBaselineSeconds / averageDt).rounded())) : 1
+        let strideCount = robustStrideCount(forTimestamps: samples.map { $0.timestamp })
         guard samples.count > 2 * strideCount else { return [] }
 
         var events: [CurvatureEvent] = []
@@ -471,9 +443,7 @@ final class TrajectoryCalculator {
         // bruit de suivi réel produit par le détecteur Vision d'image en image suffisait à franchir
         // le seuil de 12° d'une comparaison trop rapprochée, malgré une trajectoire globale mesurée
         // à R² = 0.97 (quasi rectiligne).
-        let totalDuration = (samples.last?.timestamp ?? 0) - (samples.first?.timestamp ?? 0)
-        let averageDt = samples.count > 1 ? totalDuration / Double(samples.count - 1) : 0
-        let strideCount = averageDt > 0 ? Swift.max(1, Int((curvatureBaselineSeconds / averageDt).rounded())) : 1
+        let strideCount = robustStrideCount(forTimestamps: samples.map { $0.timestamp })
         guard points.count > 2 * strideCount else { return (false, 0) }
 
         var signs: [Int] = []

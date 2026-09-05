@@ -69,7 +69,7 @@ final class DistanceEstimator {
         averageAngularVelocityDegPerS: Double? = nil
     ) -> DistanceResult {
         guard let midDetection = detections[safeIndex: detections.count / 2],
-              let frame = frames.min(by: { abs($0.timestamp - midDetection.timestamp) < abs($1.timestamp - midDetection.timestamp) })
+              let frame = frames.nearest(to: midDetection.timestamp)
         else {
             return DistanceResult(distanceMeters: nil, altitudeMeters: nil, confidence: 0, method: "Aucune donnée")
         }

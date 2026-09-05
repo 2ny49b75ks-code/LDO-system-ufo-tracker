@@ -181,7 +181,7 @@ enum OverlayRenderer {
         var sourcePixelBufferAttributes: [String: Any]? = [String(kCVPixelBufferPixelFormatTypeKey): kCVPixelFormatType_32BGRA]
         var requiredPixelBufferAttributesForRenderContext: [String: Any] = [String(kCVPixelBufferPixelFormatTypeKey): kCVPixelFormatType_32BGRA]
 
-        private let ciContext = CIContext()
+        private let ciContext = SharedImageContext.context
         private var renderContext: AVVideoCompositionRenderContext?
 
         func renderContextChanged(_ newRenderContext: AVVideoCompositionRenderContext) {

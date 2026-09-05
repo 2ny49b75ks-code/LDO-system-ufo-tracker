@@ -23,7 +23,7 @@ import simd
 /// capturées en direct via ARKit : une vidéo déjà enregistrée (onglet LIVE, ré-analysée plus
 /// tard) conserve sa pose caméra dans un fichier annexe (voir `RecordingStore`), mais une vidéo
 /// importée depuis la bibliothèque photo n'en a jamais eu.
-struct CapturedFrame {
+struct CapturedFrame: Timestamped {
     let image: CGImage
     let cameraTransform: simd_float4x4?
     let intrinsics: simd_float3x3?

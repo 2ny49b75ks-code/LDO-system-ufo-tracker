@@ -123,7 +123,11 @@ enum VideoFrameExtractor {
     /// démarrée avec le timestamp de la toute première image capturée) avant de comparer.
     private static func nearestPose(to timestamp: Double, in poses: [PersistedFramePose]) -> PersistedFramePose? {
         guard let firstTimestamp = poses.map(\.timestamp).min() else { return nil }
-        return poses.min { abs(($0.timestamp - firstTimestamp) - timestamp) < abs(($1.timestamp - firstTimestamp) - timestamp) }
+        // `transform`/`intrinsics` sont les seuls champs utilisés par l'appelant (voir plus haut) —
+        // le timestamp recalé ci-dessous n'a besoin d'être correct que pour cette recherche, pas
+        // préservé dans le résultat.
+        let rebased = poses.map { PersistedFramePose(timestamp: $0.timestamp - firstTimestamp, transform: $0.transform, intrinsics: $0.intrinsics) }
+        return rebased.nearest(to: timestamp)
     }
 }
 

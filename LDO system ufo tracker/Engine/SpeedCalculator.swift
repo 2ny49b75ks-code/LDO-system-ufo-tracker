@@ -55,7 +55,7 @@ final class SpeedCalculator {
         // l'objet. Corrige un cas réel (signalé par Jean-David, 2026-08-09) : une vitesse moyenne de
         // 132 km/h contre un maximum de 1302 km/h sur la même vidéo — un écart de 10× entre les deux
         // est la signature d'un point isolé, pas d'une vraie pointe de vitesse soutenue.
-        let max = Self.robustPeak(velocitiesKmh.map { $0.value })
+        let max = robustPeak(velocitiesKmh.map { $0.value })
         let isStationary = max < stationaryThresholdKmh
 
         // 2. Accélération linéaire (m/s²), sur une base élargie (~0.25s) plutôt qu'un simple pas
@@ -68,12 +68,7 @@ final class SpeedCalculator {
         //    TOUTE la série. Même principe que le correctif de
         //    `TrajectoryCalculator.detectSharpTurns` : élargir la base de comparaison accumule le
         //    vrai signal de vitesse tout en moyennant le bruit indépendant d'une image à l'autre.
-        let accelerationBaselineSeconds = 0.25
-        let velocityDuration = (velocitiesKmh.last?.timestamp ?? 0) - (velocitiesKmh.first?.timestamp ?? 0)
-        let averageVelocityDt = velocitiesKmh.count > 1 ? velocityDuration / Double(velocitiesKmh.count - 1) : 0
-        // `Swift.max` explicite : le nom local `max` (vitesse maximale, voir plus haut) masque sinon
-        // la fonction globale `max(_:_:)` dans cette portée.
-        let accelerationStride = averageVelocityDt > 0 ? Swift.max(1, Int((accelerationBaselineSeconds / averageVelocityDt).rounded())) : 1
+        let accelerationStride = robustStrideCount(forTimestamps: velocitiesKmh.map { $0.timestamp })
 
         // Lissage léger (moyenne glissante sur 3 échantillons), UNIQUEMENT pour cette dérivée
         // d'accélération — la série `velocitiesKmh` brute reste inchangée pour l'affichage
@@ -121,7 +116,7 @@ final class SpeedCalculator {
         // linéaire est 0 par définition. Le chiffre lissé/élargi ci-dessus reste utile pour la
         // détection de "performance impossible" ci-dessous (comparaison à un seuil, pas un affichage
         // brut), mais n'est plus présenté comme LA valeur d'accélération sans corroboration géométrique.
-        let maxAcceleration: Double = hasGenuineSharpTurn ? Self.robustPeak(accelerations) : 0
+        let maxAcceleration: Double = hasGenuineSharpTurn ? robustPeak(accelerations) : 0
 
         // 3. "Défie la physique" seulement si l'accélération extrême est SOUTENUE (au moins 2 échantillons
         //    consécutifs) ET corroborée par un vrai virage détecté indépendamment — un pic isolé, même
@@ -143,36 +138,13 @@ final class SpeedCalculator {
         )
     }
 
-    /// Ne retient un pic de la série que s'il est corroboré par l'échantillon voisin (même ordre de
-    /// grandeur sur 2 échantillons consécutifs, pas juste 1) — filtre le bruit d'un seul écart de
-    /// détection isolé sans écraser une vraie variation soutenue sur plusieurs images. Voir le
-    /// commentaire au point d'appel.
-    private static func robustPeak(_ values: [Double]) -> Double {
-        // BUG CORRIGÉ (revue de code du 2026-08-27) : cette copie omettait le `abs()` déjà présent
-        // dans l'implémentation jumelle de `TrajectoryCalculator.robustPeak` (même algorithme,
-        // dupliqué dans les deux fichiers) — sans lui, une série qui peut aller au négatif ferait
-        // gagner la paire la PLUS négative au lieu du plus grand pic en magnitude.
-        guard values.count >= 2 else { return values.first.map { abs($0) } ?? 0 }
-        var corroboratedPeaks: [Double] = []
-        for i in 1..<values.count {
-            corroboratedPeaks.append(min(abs(values[i-1]), abs(values[i])))
-        }
-        return corroboratedPeaks.max() ?? 0
-    }
-
     /// Moyenne glissante centrée — voir le commentaire au point d'appel (calcul de l'accélération
     /// linéaire) pour pourquoi ce lissage supplémentaire est nécessaire en plus de la base élargie.
     private static func movingAverage(_ series: [TimedValue], window: Int) -> [TimedValue] {
-        guard series.count > window else { return series }
-        var result: [TimedValue] = []
-        for i in 0..<series.count {
-            let lo = max(0, i - window / 2)
-            let hi = min(series.count - 1, i + window / 2)
-            let slice = series[lo...hi]
+        centeredMovingAverage(series, window: window) { i, slice in
             let avg = slice.reduce(0) { $0 + $1.value } / Double(slice.count)
-            result.append(TimedValue(timestamp: series[i].timestamp, value: avg))
+            return TimedValue(timestamp: series[i].timestamp, value: avg)
         }
-        return result
     }
 
     /// Étiquette informative comparant la vitesse à des repères connus. Purement indicative :

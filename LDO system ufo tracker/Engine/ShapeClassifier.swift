@@ -23,7 +23,7 @@ import UIKit
 /// et peut remplacer `heuristicClassify` sans changer le reste du pipeline.
 final class ShapeClassifier {
 
-    private let ciContext = CIContext()
+    private let ciContext = SharedImageContext.context
 
     func classifyShape(detections: [Detection], frames: [CapturedFrame], mode: CaptureMode) -> ShapeResult {
         guard detections.count >= 3 else {
@@ -87,7 +87,7 @@ final class ShapeClassifier {
     /// Isole la zone lumineuse pour une détection donnée (réutilisé par IlluminationAnalyzer pour
     /// échantillonner l'évolution de la luminosité/couleur sur plusieurs images de la séquence).
     func isolateLuminousRegion(for detection: Detection, frames: [CapturedFrame]) -> LuminousRegion? {
-        guard let frame = frames.min(by: { abs($0.timestamp - detection.timestamp) < abs($1.timestamp - detection.timestamp) })
+        guard let frame = frames.nearest(to: detection.timestamp)
         else { return nil }
 
         let ciImage = CIImage(cgImage: frame.image)
@@ -323,17 +323,11 @@ final class ShapeClassifier {
     }
 
     private func smoothedCenters(_ centers: [CGPoint], window: Int) -> [CGPoint] {
-        guard centers.count > window else { return centers }
-        var result: [CGPoint] = []
-        for i in 0..<centers.count {
-            let lo = max(0, i - window / 2)
-            let hi = min(centers.count - 1, i + window / 2)
-            let slice = centers[lo...hi]
+        centeredMovingAverage(centers, window: window) { _, slice in
             let avgX = slice.reduce(0) { $0 + $1.x } / CGFloat(slice.count)
             let avgY = slice.reduce(0) { $0 + $1.y } / CGFloat(slice.count)
-            result.append(CGPoint(x: avgX, y: avgY))
+            return CGPoint(x: avgX, y: avgY)
         }
-        return result
     }
 
     private func heuristicClassify(motion: MotionSignature, sizeVariability: Double, aspectRatio: Double, straightness: Double, totalDisplacement: Double, mode: CaptureMode) -> (String, Double) {

@@ -53,7 +53,7 @@ enum PhotoComposer {
     private static func bestFrameWithDetection(frames: [CapturedFrame], detections: [Detection]) -> (CapturedFrame, Detection)? {
         guard !detections.isEmpty, !frames.isEmpty else { return nil }
         let pairs: [(CapturedFrame, Detection)] = detections.compactMap { detection in
-            guard let frame = frames.min(by: { abs($0.timestamp - detection.timestamp) < abs($1.timestamp - detection.timestamp) })
+            guard let frame = frames.nearest(to: detection.timestamp)
             else { return nil }
             return (frame, detection)
         }
@@ -124,7 +124,7 @@ enum PhotoComposer {
     /// fond du ciel une fois recadré numériquement. Ce rehaussement reproduit sur toutes les photos,
     /// automatiquement, ce que l'utilisateur devait auparavant faire manuellement (recadrage +
     /// retouche) pour bien distinguer l'objet.
-    private static let enhanceContext = CIContext()
+    private static let enhanceContext = SharedImageContext.context
 
     private static func enhance(_ image: CGImage) -> CGImage? {
         let ciImage = CIImage(cgImage: image)

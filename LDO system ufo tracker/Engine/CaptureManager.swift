@@ -82,7 +82,7 @@ final class CaptureManager: NSObject, ObservableObject {
     private var videoOutputURL: URL?
     /// Contexte dédié au rehaussement faible luminosité de la vidéo écrite (voir
     /// `LowLightEnhancer`/`appendVideoFrame`), séparé de celui de `CGImage.from`.
-    private let videoEnhanceContext = CIContext()
+    private let videoEnhanceContext = SharedImageContext.context
 
     // MARK: Configuration
 
@@ -445,7 +445,7 @@ extension CaptureManager: ARSessionDelegate {
 extension CGImage {
     /// Contexte Core Image partagé : éviter d'en recréer un à chaque frame,
     /// ce qui provoquait des saccades pendant l'enregistrement.
-    private static let conversionContext = CIContext(options: nil)
+    private static let conversionContext = SharedImageContext.context
 
     /// Conversion utilitaire CVPixelBuffer (format YCbCr d'ARKit) -> CGImage, réorientée pour
     /// correspondre à l'orientation portrait de l'appareil (ARKit capture nativement en paysage,

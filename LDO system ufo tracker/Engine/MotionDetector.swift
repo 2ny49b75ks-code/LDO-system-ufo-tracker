@@ -20,7 +20,7 @@ import CoreVideo
 ///     pour obtenir une trajectoire continue par objet plutôt que des détections isolées.
 final class MotionDetector {
 
-    private let ciContext = CIContext()
+    private let ciContext = SharedImageContext.context
     private let sequenceHandler = VNSequenceRequestHandler()
 
     /// Surface minimale (en proportion de l'image, 0 à 1) pour qu'une zone en mouvement

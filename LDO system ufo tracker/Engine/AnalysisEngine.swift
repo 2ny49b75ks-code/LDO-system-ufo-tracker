@@ -415,7 +415,7 @@ private func debugLog(_ message: @autoclosure () -> String) {
     print("LDO_DEBUG \(message())")
     #endif
 }
-struct Detection {
+struct Detection: Timestamped {
     var boundingBox: CGRect
     var timestamp: TimeInterval
 }
