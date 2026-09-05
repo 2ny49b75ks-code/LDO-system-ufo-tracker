@@ -49,8 +49,14 @@ struct RecordingsListView: View {
                     }
                 }
                 .onDelete { indexSet in
-                    for index in indexSet {
-                        recordingStore.delete(recordingStore.sessions[index])
+                    // BUG CORRIGÉ (revue de code du 2026-08-27) : indexer `recordingStore.sessions`
+                    // avec l'`IndexSet` d'origine PENDANT qu'on le vide un à un décale les index
+                    // restants à chaque suppression — supprimer un ensemble comme {3,4} sur 5 éléments
+                    // plantait (« Index out of range ») ou supprimait le mauvais enregistrement. On
+                    // résout d'abord tous les enregistrements visés, avant toute suppression.
+                    let sessionsToDelete = indexSet.map { recordingStore.sessions[$0] }
+                    for session in sessionsToDelete {
+                        recordingStore.delete(session)
                     }
                 }
             }

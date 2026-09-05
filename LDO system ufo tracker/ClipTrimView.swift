@@ -80,9 +80,15 @@ struct ClipTrimView: View {
 
             GeometryReader { geo in
                 ZStack {
+                    // BUG CORRIGÉ (revue de code du 2026-08-27) : `.gesture()` (priorité exclusive)
+                    // avec `minimumDistance: 0` (un simple tap suffit) captait TOUT toucher sur la
+                    // vidéo avant qu'AVKit ne puisse afficher ses propres contrôles lecture/pause —
+                    // l'utilisateur ne pouvait jamais prévisualiser l'extrait avant de le confirmer,
+                    // seul le repère cible bougeait. `.simultaneousGesture` laisse les deux coexister :
+                    // le repère se place ET les contrôles natifs restent utilisables.
                     VideoPlayer(player: player)
                         .contentShape(Rectangle())
-                        .gesture(
+                        .simultaneousGesture(
                             DragGesture(minimumDistance: 0)
                                 .onEnded { value in
                                     let x = min(max(value.location.x / geo.size.width, 0), 1)
