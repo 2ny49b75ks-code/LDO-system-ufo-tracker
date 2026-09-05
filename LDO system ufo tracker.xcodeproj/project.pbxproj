@@ -8,7 +8,18 @@
 
 /* Begin PBXFileReference section */
 		94F76E5A301AB72F00EB852B /* LDO system ufo tracker.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "LDO system ufo tracker.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		4DC4F5CEC4AD70BAFE0AA0B8 /* LDO system ufo trackerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "LDO system ufo trackerTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
+
+/* Begin PBXContainerItemProxy section */
+		54F027F2AFD2AC3ED2E2DDA9 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 94F76E52301AB72F00EB852B /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 94F76E59301AB72F00EB852B;
+			remoteInfo = "LDO system ufo tracker";
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		94F76E5C301AB72F00EB852B /* LDO system ufo tracker */ = {
@@ -16,10 +27,22 @@
 			path = "LDO system ufo tracker";
 			sourceTree = "<group>";
 		};
+		E12704A2B367DA67A9E18590 /* LDO system ufo trackerTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "LDO system ufo trackerTests";
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		94F76E57301AB72F00EB852B /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BD76424C614EA003EF4C0D4E /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -33,6 +56,7 @@
 			isa = PBXGroup;
 			children = (
 				94F76E5C301AB72F00EB852B /* LDO system ufo tracker */,
+				E12704A2B367DA67A9E18590 /* LDO system ufo trackerTests */,
 				94F76E5B301AB72F00EB852B /* Products */,
 			);
 			sourceTree = "<group>";
@@ -41,6 +65,7 @@
 			isa = PBXGroup;
 			children = (
 				94F76E5A301AB72F00EB852B /* LDO system ufo tracker.app */,
+				4DC4F5CEC4AD70BAFE0AA0B8 /* LDO system ufo trackerTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -70,6 +95,29 @@
 			productReference = 94F76E5A301AB72F00EB852B /* LDO system ufo tracker.app */;
 			productType = "com.apple.product-type.application";
 		};
+		F6E934775F8AAE6031482E78 /* LDO system ufo trackerTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 2B982B311EC4025E5111F949 /* Build configuration list for PBXNativeTarget "LDO system ufo trackerTests" */;
+			buildPhases = (
+				0991821526CA3731F765302B /* Sources */,
+				BD76424C614EA003EF4C0D4E /* Frameworks */,
+				EB110FA1D6FF3386A20F1FDB /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				5FE6C46275F767112AAEB2DB /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				E12704A2B367DA67A9E18590 /* LDO system ufo trackerTests */,
+			);
+			name = "LDO system ufo trackerTests";
+			packageProductDependencies = (
+			);
+			productName = "LDO system ufo trackerTests";
+			productReference = 4DC4F5CEC4AD70BAFE0AA0B8 /* LDO system ufo trackerTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -82,6 +130,10 @@
 				TargetAttributes = {
 					94F76E59301AB72F00EB852B = {
 						CreatedOnToolsVersion = 26.6;
+					};
+					F6E934775F8AAE6031482E78 = {
+						CreatedOnToolsVersion = 26.6;
+						TestTargetID = 94F76E59301AB72F00EB852B;
 					};
 				};
 			};
@@ -100,12 +152,28 @@
 			projectRoot = "";
 			targets = (
 				94F76E59301AB72F00EB852B /* LDO system ufo tracker */,
+				F6E934775F8AAE6031482E78 /* LDO system ufo trackerTests */,
 			);
 		};
 /* End PBXProject section */
 
+/* Begin PBXTargetDependency section */
+		5FE6C46275F767112AAEB2DB /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 94F76E59301AB72F00EB852B /* LDO system ufo tracker */;
+			targetProxy = 54F027F2AFD2AC3ED2E2DDA9 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin PBXResourcesBuildPhase section */
 		94F76E58301AB72F00EB852B /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		EB110FA1D6FF3386A20F1FDB /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -116,6 +184,13 @@
 
 /* Begin PBXSourcesBuildPhase section */
 		94F76E56301AB72F00EB852B /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		0991821526CA3731F765302B /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -341,6 +416,50 @@
 			};
 			name = Release;
 		};
+		50DE81E2D5200D1DA9F2AFB6 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 84UHTUB7CW;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.2;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "JDG-inc.LDO-system-ufo-trackerTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2,7";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/LDO system ufo tracker.app/LDO system ufo tracker";
+				XROS_DEPLOYMENT_TARGET = 26.5;
+			};
+			name = Debug;
+		};
+		F5FCF715A7DC16C4905C2875 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 84UHTUB7CW;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.2;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "JDG-inc.LDO-system-ufo-trackerTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2,7";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/LDO system ufo tracker.app/LDO system ufo tracker";
+				XROS_DEPLOYMENT_TARGET = 26.5;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -358,6 +477,15 @@
 			buildConfigurations = (
 				94F76E66301AB73000EB852B /* Debug */,
 				94F76E67301AB73000EB852B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		2B982B311EC4025E5111F949 /* Build configuration list for PBXNativeTarget "LDO system ufo trackerTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				50DE81E2D5200D1DA9F2AFB6 /* Debug */,
+				F5FCF715A7DC16C4905C2875 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
