@@ -16,6 +16,10 @@ struct ResultsView: View {
     /// Remet l'app à zéro pour la prochaine capture — voir la demande de réinitialisation
     /// automatique une fois le cycle capture + photos + analyse terminé.
     var onFinished: () -> Void = {}
+    /// Affiche le rendu 3D approximatif en réalité augmentée (voir `AR3DPreviewView`) — demande
+    /// explicite de Jean-David (2026-08-27) : « bouton voir rendu 3D... en réalité augmentée et le
+    /// sauvegarder au besoin » + « partager le rendu 3D » (les deux fournis nativement par Quick Look).
+    @State private var show3DPreview = false
 
     var body: some View {
         NavigationView {
@@ -23,6 +27,11 @@ struct ResultsView: View {
                 resultsContent
             }
             .navigationTitle("Analyse LDO")
+        }
+        .sheet(isPresented: $show3DPreview) {
+            if let modelURL = session.known3DModelURL {
+                AR3DPreviewView(modelURL: modelURL)
+            }
         }
     }
 
@@ -66,6 +75,20 @@ struct ResultsView: View {
                         resultRow("Date et heure", session.timestamp.formatted())
                         resultRow("Forme détectée", session.shapeDescription +
                                   " (\(Int(session.shapeConfidence * 100))% de confiance)")
+                        if session.known3DModelURL != nil {
+                            Button {
+                                show3DPreview = true
+                            } label: {
+                                Label("Voir en 3D / réalité augmentée", systemImage: "cube.transparent")
+                                    .font(.subheadline)
+                                    .padding(.horizontal, 16)
+                                    .padding(.vertical, 8)
+                                    .background(Color.ldoNebulaLight.opacity(0.2))
+                                    .foregroundColor(.ldoNebulaLight)
+                                    .clipShape(Capsule())
+                            }
+                            .accessibilityHint("Ouvre le rendu 3D approximatif de l'objet — bouton réalité augmentée et bouton de partage/enregistrement fournis dans cet écran")
+                        }
                         resultRow("Illumination", "\(session.illuminationPattern) — couleur : \(session.illuminationColor)")
                         resultRow("Direction", session.isLinear ? "Trajectoire rectiligne continue (R²: \(String(format: "%.2f", session.linearityR2)))" : "Trajectoire asymétrique / changements brusques (R²: \(String(format: "%.2f", session.linearityR2)))")
                         resultRow("Vitesse", "Moyenne : \(Int(session.estimatedSpeedKmh)) km/h — Max : \(Int(session.maxSpeedKmh)) km/h" +

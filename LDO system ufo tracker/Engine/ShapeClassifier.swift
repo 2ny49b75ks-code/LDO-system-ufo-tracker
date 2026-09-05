@@ -9,6 +9,8 @@ import CoreImage
 import CoreImage.CIFilterBuiltins
 import CoreGraphics
 import Vision
+import RealityKit
+import UIKit
 
 /// Étape 3 : classification de la forme + isolement de la zone lumineuse.
 ///
@@ -163,16 +165,67 @@ final class ShapeClassifier {
         return min(abs(fillRatio - idealCircularFillRatio) / idealCircularFillRatio, 1.0)
     }
 
-    /// Génère une approximation 3D très simplifiée : extrusion de la silhouette lumineuse 2D en un
-    /// volume mince. Ce n'est PAS une reconstruction 3D véritable (celle-ci demanderait plusieurs
-    /// points de vue simultanés ou un scan LiDAR rapproché) — seulement une aide visuelle pour la
-    /// page de résultats, clairement présentée comme une approximation.
+    /// Génère une approximation 3D très simplifiée : un volume mince aux proportions de la zone
+    /// lumineuse détectée (boîte englobante), teinté de sa couleur moyenne mesurée. Ce n'est PAS une
+    /// reconstruction 3D véritable (celle-ci demanderait plusieurs points de vue simultanés ou un scan
+    /// LiDAR rapproché, et `LuminousRegion` ne conserve qu'une boîte englobante + des statistiques
+    /// agrégées, pas un masque de silhouette pixel par pixel) — seulement une aide visuelle exportée
+    /// en `.usdz`, viewable/partageable en réalité augmentée via Quick Look (voir `AR3DPreviewView`),
+    /// clairement présentée comme une approximation.
+    ///
+    /// IMPLÉMENTÉ (2026-08-27, demande de Jean-David : bouton « voir en 3D/RA ») : cette fonction
+    /// retournait auparavant toujours `nil` (non implémentée).
     func buildApproximate3DSilhouette(luminousRegion: LuminousRegion?) -> URL? {
-        guard luminousRegion != nil else { return nil }
-        // Implémentation réelle : RealityKit — ProceduralMesh généré à partir du masque de silhouette
-        // (isolateLuminousRegion), extrudé sur une faible épaisseur, exporté en .usdz via
-        // Entity.write(to:). Omis ici (dépend du runtime RealityKit, non disponible hors iOS).
-        return nil
+        guard let region = luminousRegion, region.boundingBoxInImage.width > 0, region.boundingBoxInImage.height > 0 else { return nil }
+
+        // Proportions du volume calquées sur celles de la boîte englobante réelle (largeur/hauteur),
+        // profondeur fixe et mince — un point lumineux distant n'a aucune information de profondeur
+        // mesurable, on ne prétend donc pas en connaître une.
+        let aspect = Float(region.boundingBoxInImage.width / region.boundingBoxInImage.height)
+        let baseSize: Float = 0.3   // mètres, taille de référence arbitraire pour l'affichage RA
+        let width = aspect >= 1 ? baseSize : baseSize * aspect
+        let height = aspect >= 1 ? baseSize / aspect : baseSize
+        let depth: Float = min(width, height) * 0.15
+
+        let mesh = MeshResource.generateBox(width: width, height: height, depth: depth, cornerRadius: depth / 2)
+        var material = SimpleMaterial()
+        material.color = .init(tint: UIColor(
+            red: CGFloat(region.averageColor.r),
+            green: CGFloat(region.averageColor.g),
+            blue: CGFloat(region.averageColor.b),
+            alpha: 1
+        ))
+        material.roughness = .float(0.3)
+        material.metallic = .float(0.6)
+        let modelEntity = ModelEntity(mesh: mesh, materials: [material])
+
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("usdz")
+
+        // `Entity.write(to:)` est asynchrone (RealityKit) alors que cette fonction est appelée de
+        // façon synchrone par `classifyShape`/`AnalysisEngine.analyze` — pont bloquant via sémaphore,
+        // même principe déjà utilisé ailleurs dans ce fichier/ce projet pour ponter une API async dans
+        // une chaîne d'appel synchrone existante (voir `VideoFrameExtractor.extractFrames`).
+        let semaphore = DispatchSemaphore(value: 0)
+        var writeError: Error?
+        Task {
+            do {
+                try await modelEntity.write(to: outputURL)
+            } catch {
+                writeError = error
+            }
+            semaphore.signal()
+        }
+        _ = semaphore.wait(timeout: .now() + 10)
+
+        if let writeError {
+            #if DEBUG
+            print("LDO_DEBUG buildApproximate3DSilhouette : échec de l'export .usdz — \(writeError.localizedDescription)")
+            #endif
+            return nil
+        }
+        return outputURL
     }
 
     /// Échantillonne quelques images (jusqu'à 5) autour des détections et cherche une main humaine
