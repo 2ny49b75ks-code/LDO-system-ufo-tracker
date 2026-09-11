@@ -236,16 +236,15 @@ struct ClipTrimView: View {
             CMTime(seconds: duration * Double(i) / Double(max(count - 1, 1)), preferredTimescale: 600)
         }
 
+        // Dégradation silencieuse sur un échec individuel (cas `.failure` ignoré ci-dessous) : sans
+        // miniatures, le curseur de sélection ci-dessus reste pleinement fonctionnel, seul l'aperçu
+        // visuel supplémentaire est absent. La séquence elle-même ne lance plus d'erreur (les échecs
+        // arrivent comme des éléments `.failure`, pas via `throw`), d'où l'absence de `try`/`do-catch`.
         var images: [UIImage] = []
-        do {
-            for try await result in generator.images(for: times) {
-                if case let .success(_, cgImage, _) = result {
-                    images.append(UIImage(cgImage: cgImage))
-                }
+        for await result in generator.images(for: times) {
+            if case let .success(_, cgImage, _) = result {
+                images.append(UIImage(cgImage: cgImage))
             }
-        } catch {
-            // Dégradation silencieuse : sans miniatures, le curseur de sélection ci-dessus reste
-            // pleinement fonctionnel, seul l'aperçu visuel supplémentaire est absent.
         }
         return images
     }

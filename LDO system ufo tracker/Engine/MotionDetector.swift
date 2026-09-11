@@ -585,7 +585,7 @@ final class MotionDetector {
             return []
         }
 
-        guard let results = request.results as? [VNContoursObservation], let observation = results.first else {
+        guard let observation = request.results?.first else {
             return []
         }
 

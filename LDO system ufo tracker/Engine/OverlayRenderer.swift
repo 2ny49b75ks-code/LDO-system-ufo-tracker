@@ -9,7 +9,13 @@ import CoreGraphics
 import CoreText
 import CoreImage
 import CoreMedia
-import AVFoundation
+// `@preconcurrency` : `AVVideoCompositing`/`AVVideoCompositionInstructionProtocol` (implémentés
+// ci-dessous) exigent des types Sendable pour leurs propriétés (buffers pixel, IDs de piste), mais
+// AVFoundation elle-même utilise encore `[String: Any]`/`[NSValue]` — non Sendable — dans ces
+// mêmes signatures de protocole. Aucun changement de comportement : ça désactive uniquement la
+// vérification stricte de concurrence sur cette frontière système pas encore auditée par Apple, pas
+// la sécurité réelle (ces valeurs sont fixées à l'initialisation, jamais mutées ensuite).
+@preconcurrency import AVFoundation
 
 /// Étape 9 : incruste sur les photos et la vidéo :
 /// - la trajectoire de l'objet, en rouge
@@ -178,8 +184,12 @@ enum OverlayRenderer {
     /// Compositeur vidéo : applique `draw(on:session:)` image par image sur la vidéo complète (pas
     /// seulement les 3 photos), via `exportVideoWithOverlays(sourceURL:session:)` ci-dessus.
     final class VideoOverlayCompositor: NSObject, AVVideoCompositing {
-        var sourcePixelBufferAttributes: [String: Any]? = [String(kCVPixelBufferPixelFormatTypeKey): kCVPixelFormatType_32BGRA]
-        var requiredPixelBufferAttributesForRenderContext: [String: Any] = [String(kCVPixelBufferPixelFormatTypeKey): kCVPixelFormatType_32BGRA]
+        // `nonisolated(unsafe)` : `AVVideoCompositing` exige ces propriétés en `[String: Any]`, un
+        // type non-Sendable par nature (`Any`) — aucun moyen de les typer autrement tout en
+        // respectant le protocole système. Sans danger réel ici : fixées une seule fois à
+        // l'initialisation, jamais mutées après (voir les valeurs littérales ci-dessous).
+        nonisolated(unsafe) var sourcePixelBufferAttributes: [String: Any]? = [String(kCVPixelBufferPixelFormatTypeKey): kCVPixelFormatType_32BGRA]
+        nonisolated(unsafe) var requiredPixelBufferAttributesForRenderContext: [String: Any] = [String(kCVPixelBufferPixelFormatTypeKey): kCVPixelFormatType_32BGRA]
 
         private let ciContext = SharedImageContext.context
         private var renderContext: AVVideoCompositionRenderContext?
@@ -296,7 +306,10 @@ final class OverlayVideoCompositionInstruction: NSObject, AVVideoCompositionInst
     let timeRange: CMTimeRange
     let enablePostProcessing = false
     let containsTweening = false
-    let requiredSourceTrackIDs: [NSValue]?
+    // `nonisolated(unsafe)` : `NSValue` (imposé par `AVVideoCompositionInstructionProtocol`) n'est
+    // pas Sendable ; sans danger réel ici, `let` — fixé une seule fois dans `init` ci-dessous, jamais
+    // muté ensuite.
+    nonisolated(unsafe) let requiredSourceTrackIDs: [NSValue]?
     let passthroughTrackID: CMPersistentTrackID = kCMPersistentTrackID_Invalid
 
     let sourceTrackID: CMPersistentTrackID
