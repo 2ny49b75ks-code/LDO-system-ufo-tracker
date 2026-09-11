@@ -20,7 +20,8 @@ struct AnalysisSession: Identifiable, Equatable {
 
     var shapeDescription: String = ""
     var shapeConfidence: Double = 0
-    var known3DModelURL: URL?              // rendu 3D approximatif exporté (.usdz) si généré
+    var known3DModelURL: URL?              // rendu 3D approximatif exporté (.usdz), généré à la demande (voir ResultsView)
+    var luminousRegionForModel: LuminousRegion?   // conservé pour permettre cette génération différée
 
     var trajectory: [CGPoint] = []          // trajectoire en pixels, superposée en rouge
     var trajectoryOnMap: [CLCoordinate] = [] // vue aérienne (MapKit)
@@ -106,10 +107,15 @@ final class AnalysisEngine {
     /// `progress` est appelé après chaque étape terminée, avec la fraction complétée (0...1) et un
     /// libellé décrivant l'étape suivante — utilisé par `SessionAnalyzer` pour afficher une
     /// progression réelle pendant le calcul (onglets LIVE et Bibliothèque).
-    /// `hintPoint` : point que l'utilisateur a touché dans `ClipTrimView` pour indiquer l'objet à
-    /// analyser (repère Vision, normalisé, origine bas-gauche) — `nil` si aucun point touché, la
-    /// détection reste alors entièrement automatique (comportement d'avant).
-    func analyze(frames: [CapturedFrame], videoURL: URL?, mode: CaptureMode, captureLocation: CLCoordinate? = nil, hintPoint: CGPoint? = nil, progress: ((Double, String) -> Void)? = nil) -> AnalysisSession {
+    /// `hintPoint` : point que l'utilisateur a touché/ciblé (repère Vision, normalisé, origine
+    /// bas-gauche) pour indiquer l'objet à analyser — soit dans `ClipTrimView` après l'enregistrement,
+    /// soit sur le réticule de ciblage en direct dans `LiveTabView` (voir `RecordingStore`, qui
+    /// persiste ce ciblage avec la vidéo). `nil` si aucun point touché, la détection reste alors
+    /// entièrement automatique (comportement d'avant).
+    /// `hintRadius` : rayon (fraction de la diagonale du cadre, 0...1) de la zone de ciblage — quand
+    /// fourni avec `hintPoint`, restreint STRICTEMENT la détection à cette zone (voir le commentaire
+    /// détaillé dans `MotionDetector` sur le bug d'un arbre/objet hors cible faussement détecté).
+    func analyze(frames: [CapturedFrame], videoURL: URL?, mode: CaptureMode, captureLocation: CLCoordinate? = nil, hintPoint: CGPoint? = nil, hintRadius: CGFloat? = nil, progress: ((Double, String) -> Void)? = nil) -> AnalysisSession {
         var session = AnalysisSession()
         session.timestamp = Date()
         session.captureLocation = captureLocation
@@ -129,17 +135,17 @@ final class AnalysisEngine {
         var trackedObjects: [TrackedObject]
         switch mode {
         case .night:
-            trackedObjects = motionDetector.detectByLuminosity(in: frames, hintPoint: hintPoint)
+            trackedObjects = motionDetector.detectByLuminosity(in: frames, hintPoint: hintPoint, hintRadius: hintRadius)
             debugLog("détection par luminosité : \(trackedObjects.first?.detections.count ?? 0) détection(s) sur \(frames.count) image(s)")
             if trackedObjects.isEmpty {
-                trackedObjects = motionDetector.detectMovingObjects(in: frames)
+                trackedObjects = motionDetector.detectMovingObjects(in: frames, hintPoint: hintPoint, hintRadius: hintRadius)
                 debugLog("repli détection par mouvement : \(trackedObjects.first?.detections.count ?? 0) détection(s)")
             }
         case .day:
-            trackedObjects = motionDetector.detectDarkObjectOnBrightSky(in: frames, hintPoint: hintPoint)
+            trackedObjects = motionDetector.detectDarkObjectOnBrightSky(in: frames, hintPoint: hintPoint, hintRadius: hintRadius)
             debugLog("détection silhouette sombre sur ciel clair (mode jour) : \(trackedObjects.first?.detections.count ?? 0) détection(s)")
             if trackedObjects.isEmpty {
-                trackedObjects = motionDetector.detectMovingObjects(in: frames)
+                trackedObjects = motionDetector.detectMovingObjects(in: frames, hintPoint: hintPoint, hintRadius: hintRadius)
                 debugLog("repli détection par mouvement (mode jour) : \(trackedObjects.first?.detections.count ?? 0) détection(s)")
             }
         }
@@ -162,7 +168,12 @@ final class AnalysisEngine {
         let shape = shapeClassifier.classifyShape(detections: detections, frames: frames, mode: mode)
         session.shapeDescription = shape.label
         session.shapeConfidence = shape.confidence
-        session.known3DModelURL = shapeClassifier.buildApproximate3DSilhouette(luminousRegion: shape.luminousRegion)
+        // Le rendu 3D n'est plus généré ici (voir le commentaire détaillé sur
+        // `ShapeClassifier.buildApproximate3DSilhouette` — appeler cette fonction async depuis ce
+        // pipeline synchrone exigeait un pontage Task+sémaphore qui causait un plantage/blocage à
+        // l'analyse). `luminousRegionForModel` conserve seulement la donnée nécessaire ; la
+        // génération réelle se fait à la demande, quand l'utilisateur appuie sur « Voir en 3D ».
+        session.luminousRegionForModel = shape.luminousRegion
         session.hasContrail = shape.hasContrail
         // Direction verticale (monte/descend) sur l'ensemble du clip — sur les positions brutes à
         // l'écran, pas la trajectoire angulaire corrigée de la pose (calculable même sans pose ARKit,

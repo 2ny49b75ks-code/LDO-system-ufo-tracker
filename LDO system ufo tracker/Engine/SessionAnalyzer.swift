@@ -29,6 +29,7 @@ final class SessionAnalyzer: ObservableObject {
         mode: CaptureMode,
         captureLocation: CLCoordinate? = nil,
         hintPoint: CGPoint? = nil,
+        hintRadius: CGFloat? = nil,
         completion: @escaping (AnalysisSession) -> Void
     ) {
         isAnalyzing = true
@@ -38,7 +39,7 @@ final class SessionAnalyzer: ObservableObject {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let frames = VideoFrameExtractor.extractFrames(from: videoURL, poses: poses, timeRange: clipRange)
 
-            var result = AnalysisEngine().analyze(frames: frames, videoURL: videoURL, mode: mode, captureLocation: captureLocation, hintPoint: hintPoint) { fraction, label in
+            var result = AnalysisEngine().analyze(frames: frames, videoURL: videoURL, mode: mode, captureLocation: captureLocation, hintPoint: hintPoint, hintRadius: hintRadius) { fraction, label in
                 DispatchQueue.main.async {
                     self?.progress = fraction
                     self?.progressLabel = label

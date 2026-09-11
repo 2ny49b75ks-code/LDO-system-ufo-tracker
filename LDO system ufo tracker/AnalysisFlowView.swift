@@ -19,6 +19,11 @@ struct AnalysisTarget: Identifiable {
     /// Position GPS demandée au début de l'enregistrement (voir `LocationProvider`) — `nil` pour un
     /// import bibliothèque, comme la pose ARKit.
     let captureLocation: CLCoordinate?
+    /// Ciblage désigné en direct sur le réticule (voir `TargetReticleOverlay`/`LiveTabView`) — préremplit
+    /// `ClipTrimView`, modifiable/retirable par l'utilisateur avant de lancer l'analyse. `nil` pour un
+    /// import bibliothèque (aucun ciblage en direct possible sans passer par l'onglet LIVE).
+    var initialHintPoint: CGPoint? = nil
+    var initialHintRadius: CGFloat? = nil
 }
 
 /// Enchaîne les 3 étapes de l'analyse d'une vidéo déjà enregistrée, dans une seule présentation
@@ -30,6 +35,8 @@ struct AnalysisFlowView: View {
     let poses: [PersistedFramePose]
     let initialMode: CaptureMode
     let captureLocation: CLCoordinate?
+    var initialHintPoint: CGPoint? = nil
+    var initialHintRadius: CGFloat? = nil
     let onFinished: () -> Void
 
     private enum Step {
@@ -51,10 +58,12 @@ struct AnalysisFlowView: View {
                 ClipTrimView(
                     videoURL: videoURL,
                     initialMode: initialMode,
+                    initialHintPoint: initialHintPoint,
+                    initialHintRadius: initialHintRadius,
                     onCancel: { dismiss() },
-                    onConfirm: { clipRange, mode, hintPoint in
+                    onConfirm: { clipRange, mode, hintPoint, hintRadius in
                         step = .analyzing
-                        analyzer.analyze(videoURL: videoURL, poses: poses, clipRange: clipRange, mode: mode, captureLocation: captureLocation, hintPoint: hintPoint) { session in
+                        analyzer.analyze(videoURL: videoURL, poses: poses, clipRange: clipRange, mode: mode, captureLocation: captureLocation, hintPoint: hintPoint, hintRadius: hintRadius) { session in
                             step = .results(session)
                         }
                     }

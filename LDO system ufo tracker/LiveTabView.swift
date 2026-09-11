@@ -20,6 +20,13 @@ struct LiveTabView: View {
     /// Même principe que `zoomAtGestureStart` ci-dessus, mais pour le bouton de zoom vertical dédié
     /// sur le bord droit de l'écran (voir `verticalZoomControl`) — geste indépendant du pincement.
     @State private var zoomAtButtonDragStart: CGFloat = 1.0
+    /// Réticule de ciblage — voir `TargetReticleOverlay`. `targetCenter`/`targetRadius` sont en points,
+    /// repère local de l'écran (origine haut-gauche) ; convertis en repère Vision normalisé et
+    /// transmis à `capture` (voir `CaptureManager.targetHintPoint`/`targetHintRadius`) pour être
+    /// persistés avec l'enregistrement et utilisés par défaut à l'analyse — demande explicite de
+    /// Jean-David (2026-09-11) : « toucher la cible à l'écran... en mode capture et en mode analyse ».
+    @State private var targetCenter: CGPoint?
+    @State private var targetRadius: CGFloat = 60
     /// Hauteur du rail du bouton de zoom vertical — sert à la fois à dessiner le rail et à convertir
     /// le déplacement du doigt en variation de zoom (voir `verticalZoomControl`).
     private let zoomRailHeight: CGFloat = 160
@@ -49,6 +56,22 @@ struct LiveTabView: View {
                 .stroke(Color.ldoNebulaLight, lineWidth: 12)
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
+
+            // Réticule de ciblage — voir `TargetReticleOverlay` et le commentaire sur `targetCenter`
+            // ci-dessus. Toujours actif (avant ET pendant l'enregistrement, comme le cadre mauve),
+            // jamais lié au bouton d'enregistrement : toucher l'écran ici ne fait JAMAIS démarrer un
+            // enregistrement, seul le bouton soucoupe le fait (voir plus bas).
+            GeometryReader { geo in
+                TargetReticleOverlay(center: $targetCenter, radius: $targetRadius, containerSize: geo.size)
+                    .onChange(of: targetCenter) {
+                        capture.targetHintPoint = TargetReticleOverlay.visionHintPoint(center: targetCenter, containerSize: geo.size)
+                        capture.targetHintRadius = TargetReticleOverlay.visionHintRadius(radius: targetRadius, containerSize: geo.size)
+                    }
+                    .onChange(of: targetRadius) {
+                        capture.targetHintRadius = TargetReticleOverlay.visionHintRadius(radius: targetRadius, containerSize: geo.size)
+                    }
+            }
+            .ignoresSafeArea()
 
             // Bouton de zoom vertical dédié, sur le bord droit de l'écran — demande explicite de
             // Jean-David (2026-08-25) : alternative au pincement, glisser le doigt vers le haut sur ce

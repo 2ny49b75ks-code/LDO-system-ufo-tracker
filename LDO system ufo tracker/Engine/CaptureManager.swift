@@ -45,6 +45,14 @@ final class CaptureManager: NSObject, ObservableObject {
     static let minZoomFactor: CGFloat = 1.0
     static let maxZoomFactor: CGFloat = 5.0
 
+    /// Zone de ciblage désignée par l'utilisateur sur le réticule en direct (voir
+    /// `TargetReticleOverlay`/`LiveTabView`), repère Vision normalisé — persistée avec l'enregistrement
+    /// (voir `storeRecording`/`RecordingStore`) et utilisée par défaut comme `hintPoint`/`hintRadius`
+    /// à l'analyse, pour que la détection se concentre sur l'objet ciblé plutôt que sur tout mouvement
+    /// dans le cadre (un arbre agité, par ex.) — demande explicite de Jean-David (2026-09-11).
+    @Published var targetHintPoint: CGPoint?
+    @Published var targetHintRadius: CGFloat?
+
     /// Position GPS demandée au début de chaque enregistrement — voir `LocationProvider` — utilisée
     /// uniquement pour situer la capture sur une carte dans les résultats.
     private let locationProvider = LocationProvider()
@@ -354,7 +362,8 @@ final class CaptureManager: NSObject, ObservableObject {
         let location = locationProvider.lastKnownLocation
         recordingStore.add(
             videoFileName: fileName, posesFileName: posesFileName, createdAt: Date(), mode: captureMode,
-            latitude: location?.coordinate.latitude, longitude: location?.coordinate.longitude
+            latitude: location?.coordinate.latitude, longitude: location?.coordinate.longitude,
+            hintPoint: targetHintPoint, hintRadius: targetHintRadius.map { Double($0) }
         )
 
         // Sauvegarde également dans Photos/iCloud, comme avant (vidéo brute — les photos AVEC

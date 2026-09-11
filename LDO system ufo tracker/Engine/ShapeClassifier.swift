@@ -175,7 +175,23 @@ final class ShapeClassifier {
     ///
     /// IMPLÉMENTÉ (2026-08-27, demande de Jean-David : bouton « voir en 3D/RA ») : cette fonction
     /// retournait auparavant toujours `nil` (non implémentée).
-    func buildApproximate3DSilhouette(luminousRegion: LuminousRegion?) -> URL? {
+    ///
+    /// BUG CRITIQUE CORRIGÉ (2026-09-11, signalé par Jean-David : « l'app plante quand on analyse
+    /// une vidéo ») : cette fonction était appelée de façon SYNCHRONE, en plein milieu du pipeline
+    /// d'analyse (`AnalysisEngine.analyze`, lui-même exécuté sur une file `DispatchQueue.global` par
+    /// `SessionAnalyzer`), via un pont `Task { ... } + DispatchSemaphore.wait()` pour appeler
+    /// `Entity.write(to:)` (async, RealityKit). C'est EXACTEMENT le pontage Task+sémaphore depuis une
+    /// file GCD que ce projet documente déjà ailleurs (`VideoFrameExtractor`, commit 095a008) comme
+    /// ayant déjà causé une régression majeure : le `Task {}` non structuré s'exécute sur le pool de
+    /// threads coopératif de Swift Concurrency, qui peut être saturé/en interblocage avec la file GCD
+    /// qui attend dessus via le sémaphore — un vrai risque de blocage/plantage, pas hypothétique.
+    /// Cette fonction est maintenant `async` et n'est appelée QUE depuis un contexte Swift Concurrency
+    /// naturel (le bouton « Voir en 3D » de `ResultsView`, à la demande de l'utilisateur) — retirée du
+    /// pipeline d'analyse synchrone (voir `AnalysisEngine.swift`), qui ne génère plus le modèle 3D
+    /// automatiquement pour chaque vidéo (travail inutile si l'utilisateur ne regarde jamais ce
+    /// rendu) — seulement `LuminousRegion`, une donnée déjà calculée, est conservée dans la session
+    /// pour permettre cette génération différée.
+    func buildApproximate3DSilhouette(luminousRegion: LuminousRegion?) async -> URL? {
         guard let region = luminousRegion, region.boundingBoxInImage.width > 0, region.boundingBoxInImage.height > 0 else { return nil }
 
         // Proportions du volume calquées sur celles de la boîte englobante réelle (largeur/hauteur),
@@ -203,29 +219,15 @@ final class ShapeClassifier {
             .appendingPathComponent(UUID().uuidString)
             .appendingPathExtension("usdz")
 
-        // `Entity.write(to:)` est asynchrone (RealityKit) alors que cette fonction est appelée de
-        // façon synchrone par `classifyShape`/`AnalysisEngine.analyze` — pont bloquant via sémaphore,
-        // même principe déjà utilisé ailleurs dans ce fichier/ce projet pour ponter une API async dans
-        // une chaîne d'appel synchrone existante (voir `VideoFrameExtractor.extractFrames`).
-        let semaphore = DispatchSemaphore(value: 0)
-        var writeError: Error?
-        Task {
-            do {
-                try await modelEntity.write(to: outputURL)
-            } catch {
-                writeError = error
-            }
-            semaphore.signal()
-        }
-        _ = semaphore.wait(timeout: .now() + 10)
-
-        if let writeError {
+        do {
+            try await modelEntity.write(to: outputURL)
+            return outputURL
+        } catch {
             #if DEBUG
-            print("LDO_DEBUG buildApproximate3DSilhouette : échec de l'export .usdz — \(writeError.localizedDescription)")
+            print("LDO_DEBUG buildApproximate3DSilhouette : échec de l'export .usdz — \(error.localizedDescription)")
             #endif
             return nil
         }
-        return outputURL
     }
 
     /// Échantillonne quelques images (jusqu'à 5) autour des détections et cherche une main humaine

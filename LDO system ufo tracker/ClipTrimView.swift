@@ -18,11 +18,16 @@ import AVFoundation
 struct ClipTrimView: View {
     let videoURL: URL
     let initialMode: CaptureMode
+    /// Ciblage déjà désigné en direct sur le réticule de `LiveTabView` (voir `RecordedSession.hintPoint`),
+    /// repère Vision normalisé — préremplit le réticule ci-dessous, l'utilisateur peut l'ajuster ou le
+    /// retirer avant de lancer l'analyse. `nil` pour une vidéo importée de la bibliothèque.
+    var initialHintPoint: CGPoint? = nil
+    var initialHintRadius: CGFloat? = nil
     let onCancel: () -> Void
-    /// `CGPoint?` : point touché par l'utilisateur pour indiquer l'objet à analyser (repère Vision,
-    /// normalisé 0...1, origine bas-gauche) — `nil` s'il n'a touché nulle part, la détection reste
-    /// alors entièrement automatique comme avant.
-    let onConfirm: (ClosedRange<Double>?, CaptureMode, CGPoint?) -> Void
+    /// `CGPoint?`/`CGFloat?` : point + rayon désignés par l'utilisateur pour indiquer l'objet à
+    /// analyser (repère Vision, normalisé 0...1, origine bas-gauche) — `nil` s'il n'a rien désigné, la
+    /// détection reste alors entièrement automatique comme avant.
+    let onConfirm: (ClosedRange<Double>?, CaptureMode, CGPoint?, CGFloat?) -> Void
 
     // Réduit de 5s à 4s (2026-08-09, demande de Jean-David par précaution supplémentaire après un
     // plantage en analysant une vidéo de bibliothèque réelle en 4K) — marge de sécurité additionnelle
@@ -39,18 +44,28 @@ struct ClipTrimView: View {
     /// parties de la vidéo disponibles avant de choisir l'extrait à analyser (demande explicite de
     /// Jean-David, Mode LIVE). Générées une fois la durée connue, voir `generateFilmstrip`.
     @State private var filmstripThumbnails: [UIImage] = []
-    /// Point touché par l'utilisateur dans le repère SwiftUI (origine haut-gauche) du lecteur vidéo —
-    /// converti au repère Vision (origine bas-gauche) seulement au moment de `onConfirm`.
-    @State private var tappedPoint: CGPoint?
+    /// Centre/rayon du réticule de ciblage (voir `TargetReticleOverlay`), repère SwiftUI local (origine
+    /// haut-gauche) du lecteur vidéo — convertis au repère Vision (origine bas-gauche) normalisé
+    /// seulement au moment de `onConfirm`. Préremplis, une fois la taille du lecteur connue (voir
+    /// `.onAppear` ci-dessous), à partir de `initialHintPoint`/`initialHintRadius` si fournis.
+    @State private var targetCenter: CGPoint?
+    @State private var targetRadius: CGFloat = 60
+    /// Taille réelle du cadre vidéo, connue seulement à l'affichage (voir `GeometryReader` ci-dessous)
+    /// — nécessaire pour convertir `targetCenter`/`targetRadius` en repère Vision au moment d'`onConfirm`.
+    @State private var videoContainerSize: CGSize = .zero
 
     init(
         videoURL: URL,
         initialMode: CaptureMode,
+        initialHintPoint: CGPoint? = nil,
+        initialHintRadius: CGFloat? = nil,
         onCancel: @escaping () -> Void,
-        onConfirm: @escaping (ClosedRange<Double>?, CaptureMode, CGPoint?) -> Void
+        onConfirm: @escaping (ClosedRange<Double>?, CaptureMode, CGPoint?, CGFloat?) -> Void
     ) {
         self.videoURL = videoURL
         self.initialMode = initialMode
+        self.initialHintPoint = initialHintPoint
+        self.initialHintRadius = initialHintRadius
         self.onCancel = onCancel
         self.onConfirm = onConfirm
         _player = State(initialValue: AVPlayer(url: videoURL))
@@ -84,31 +99,22 @@ struct ClipTrimView: View {
                     // avec `minimumDistance: 0` (un simple tap suffit) captait TOUT toucher sur la
                     // vidéo avant qu'AVKit ne puisse afficher ses propres contrôles lecture/pause —
                     // l'utilisateur ne pouvait jamais prévisualiser l'extrait avant de le confirmer,
-                    // seul le repère cible bougeait. `.simultaneousGesture` laisse les deux coexister :
-                    // le repère se place ET les contrôles natifs restent utilisables.
+                    // seul le repère cible bougeait. `TargetReticleOverlay` utilise le même geste
+                    // simultané pour laisser les deux coexister.
                     VideoPlayer(player: player)
                         .contentShape(Rectangle())
-                        .simultaneousGesture(
-                            DragGesture(minimumDistance: 0)
-                                .onEnded { value in
-                                    let x = min(max(value.location.x / geo.size.width, 0), 1)
-                                    let y = min(max(value.location.y / geo.size.height, 0), 1)
-                                    tappedPoint = CGPoint(x: x, y: y)
-                                }
-                        )
 
-                    if let tappedPoint {
-                        let markerPosition = CGPoint(x: tappedPoint.x * geo.size.width, y: tappedPoint.y * geo.size.height)
-                        Circle()
-                            .stroke(Color.green, lineWidth: 3)
-                            .frame(width: 36, height: 36)
-                            .position(markerPosition)
-                            .allowsHitTesting(false)
-                        Circle()
-                            .fill(Color.green)
-                            .frame(width: 8, height: 8)
-                            .position(markerPosition)
-                            .allowsHitTesting(false)
+                    TargetReticleOverlay(center: $targetCenter, radius: $targetRadius, containerSize: geo.size)
+                }
+                .onAppear {
+                    videoContainerSize = geo.size
+                    // Préremplit le réticule à partir du ciblage désigné en direct (voir
+                    // `RecordedSession.hintPoint`) — seulement possible une fois `geo.size` connu, donc
+                    // ici plutôt qu'à l'initialisation de la vue.
+                    guard targetCenter == nil, let initialHintPoint else { return }
+                    targetCenter = CGPoint(x: initialHintPoint.x * geo.size.width, y: (1 - initialHintPoint.y) * geo.size.height)
+                    if let initialHintRadius {
+                        targetRadius = initialHintRadius * min(geo.size.width, geo.size.height)
                     }
                 }
             }
@@ -117,13 +123,13 @@ struct ClipTrimView: View {
             .padding(.horizontal)
 
             VStack(spacing: 2) {
-                Text(tappedPoint == nil
-                     ? "Touchez l'objet lumineux dans la vidéo pour aider l'analyse (optionnel)"
-                     : "Point indiqué — l'analyse priorisera cette zone")
+                Text(targetCenter == nil
+                     ? "Touchez l'objet lumineux dans la vidéo pour cibler la zone à analyser (optionnel)"
+                     : "Zone ciblée — l'analyse se concentrera sur cette zone, ajustez la taille avec la poignée")
                     .font(.caption2)
-                    .foregroundColor(tappedPoint == nil ? .secondary : .green)
-                if tappedPoint != nil {
-                    Button("Retirer le point") { tappedPoint = nil }
+                    .foregroundColor(targetCenter == nil ? .secondary : .green)
+                if targetCenter != nil {
+                    Button("Retirer le ciblage") { targetCenter = nil }
                         .font(.caption2)
                 }
             }
@@ -191,10 +197,9 @@ struct ClipTrimView: View {
             }
 
             Button {
-                // SwiftUI (origine haut-gauche) -> Vision (origine bas-gauche) : seule la
-                // composante Y s'inverse.
-                let visionPoint = tappedPoint.map { CGPoint(x: $0.x, y: 1 - $0.y) }
-                onConfirm(duration > clipDuration ? clipStart...(clipStart + clipDuration) : nil, mode, visionPoint)
+                let visionPoint = TargetReticleOverlay.visionHintPoint(center: targetCenter, containerSize: videoContainerSize)
+                let visionRadius = TargetReticleOverlay.visionHintRadius(radius: targetRadius, containerSize: videoContainerSize)
+                onConfirm(duration > clipDuration ? clipStart...(clipStart + clipDuration) : nil, mode, visionPoint, visionRadius)
             } label: {
                 Text("Analyser cet extrait")
                     .frame(maxWidth: .infinity)

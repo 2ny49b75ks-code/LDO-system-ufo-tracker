@@ -72,7 +72,16 @@ final class MotionDetector {
     /// Détecte les objets en mouvement sur l'ensemble de la séquence capturée.
     /// Retourne, pour chaque objet suivi, la liste chronologique de ses détections (utilisée
     /// ensuite pour calculer forme, trajectoire, vitesse, forces G).
-    func detectMovingObjects(in frames: [CapturedFrame]) -> [TrackedObject] {
+    /// `hintPoint`/`hintRadius` : zone de ciblage désignée par l'utilisateur (à l'écran en direct ou
+    /// dans `ClipTrimView`) — quand fournie, restreint STRICTEMENT les candidats retenus à cette zone.
+    /// BUG CORRIGÉ (2026-09-11, signalé par Jean-David : « ne capture pas les objets hors champ de
+    /// l'objet, par exemple un arbre qui bouge ne doit pas être détecté ») : sans cette restriction,
+    /// cette détection par mouvement suit N'IMPORTE QUEL mouvement plausible dans le cadre, feuillage
+    /// agité par le vent inclus — un arbre en bordure peut produire un suivi plus long/régulier que la
+    /// cible réelle, minuscule et lointaine, et gagner par défaut la sélection de l'objet principal
+    /// dans `AnalysisEngine`. Filtrer les candidats à la source, avant même de créer un suivi pour eux,
+    /// est plus robuste qu'un simple « préférer le plus proche » après coup.
+    func detectMovingObjects(in frames: [CapturedFrame], hintPoint: CGPoint? = nil, hintRadius: CGFloat? = nil) -> [TrackedObject] {
         guard frames.count >= 2 else { return [] }
 
         var trackedObjects: [TrackedObject] = []
@@ -88,8 +97,17 @@ final class MotionDetector {
             }
 
             // 3. Contours du masque → boîtes englobantes candidates (repère normalisé Vision : 0..1, origine en bas-gauche).
-            let candidateBoxes = detectContourBoundingBoxes(in: motionMask)
+            var candidateBoxes = detectContourBoundingBoxes(in: motionMask)
                 .filter { $0.width * $0.height >= minimumBlobArea && $0.width * $0.height <= maximumBlobArea && isPlausibleObjectShape($0) }
+
+            if let hintPoint {
+                let radius = hintRadius ?? 0.2
+                candidateBoxes = candidateBoxes.filter { box in
+                    let dx = box.midX - hintPoint.x
+                    let dy = box.midY - hintPoint.y
+                    return (dx * dx + dy * dy).squareRoot() <= radius
+                }
+            }
 
             if activeTrackers.isEmpty {
                 // Aucun suivi en cours : on initialise un tracker par candidat détecté.
@@ -137,13 +155,13 @@ final class MotionDetector {
     /// `hintPoint` : point que l'utilisateur a touché dans `ClipTrimView` pour désigner l'objet
     /// (repère Vision, normalisé) — sert de point de départ à la continuité de suivi (voir
     /// `brightestBoundingBox`) au lieu de partir sans a priori sur la première image.
-    func detectByLuminosity(in frames: [CapturedFrame], hintPoint: CGPoint? = nil) -> [TrackedObject] {
+    func detectByLuminosity(in frames: [CapturedFrame], hintPoint: CGPoint? = nil, hintRadius: CGFloat? = nil) -> [TrackedObject] {
         guard isDarkScene(frames) else { return [] }
 
         var detections: [Detection] = []
         var previousCenter: CGPoint? = hintPoint
         for frame in frames {
-            guard let box = brightestBoundingBox(in: frame.image, previousCenter: previousCenter) else { continue }
+            guard let box = brightestBoundingBox(in: frame.image, previousCenter: previousCenter, trackingRadius: hintRadius) else { continue }
             detections.append(Detection(boundingBox: box, timestamp: frame.timestamp))
             previousCenter = CGPoint(x: box.midX, y: box.midY)
         }
@@ -157,13 +175,13 @@ final class MotionDetector {
     ///
     /// NE S'ACTIVE QUE SUR UNE SCÈNE GLOBALEMENT CLAIRE (ciel de jour) — symétrique du garde-fou de
     /// `detectByLuminosity`.
-    func detectDarkObjectOnBrightSky(in frames: [CapturedFrame], hintPoint: CGPoint? = nil) -> [TrackedObject] {
+    func detectDarkObjectOnBrightSky(in frames: [CapturedFrame], hintPoint: CGPoint? = nil, hintRadius: CGFloat? = nil) -> [TrackedObject] {
         guard isBrightScene(frames) else { return [] }
 
         var detections: [Detection] = []
         var previousCenter: CGPoint? = hintPoint
         for frame in frames {
-            guard let box = darkestBoundingBox(in: frame.image, previousCenter: previousCenter) else { continue }
+            guard let box = darkestBoundingBox(in: frame.image, previousCenter: previousCenter, trackingRadius: hintRadius) else { continue }
             detections.append(Detection(boundingBox: box, timestamp: frame.timestamp))
             previousCenter = CGPoint(x: box.midX, y: box.midY)
         }
@@ -428,7 +446,7 @@ final class MotionDetector {
     /// vers un blob de bruit différent, ce qui produit une trajectoire artificiellement saccadée et
     /// donc une vitesse calculée bien plus élevée et bruitée que le déplacement réel (typiquement
     /// lent) de l'objet observé.
-    private func brightestBoundingBox(in image: CGImage, previousCenter: CGPoint?) -> CGRect? {
+    private func brightestBoundingBox(in image: CGImage, previousCenter: CGPoint?, trackingRadius: CGFloat? = nil) -> CGRect? {
         let ciImage = CIImage(cgImage: image)
         guard let threshold = adaptiveBrightnessThreshold(ciImage) else { return nil }
 
@@ -442,26 +460,32 @@ final class MotionDetector {
         guard !candidates.isEmpty else { return nil }
 
         if let previousCenter {
-            // Rayon de recherche généreux (20% de la diagonale normalisée — doublé à la demande
-            // explicite de Jean-David pour mieux capter l'objet ciblé au toucher, voir aussi
-            // `detectDarkObjectOnBrightSky` ci-dessous) : sert à la fois de rayon de recherche autour
-            // du point touché à l'écran (premier appel, `previousCenter = hintPoint`) et de rayon de
-            // continuité de suivi image à image ensuite — assez large pour suivre un déplacement réel,
-            // assez serré pour ignorer un nouveau blob de bruit apparu ailleurs dans le ciel.
-            let maxTrackingDistance: CGFloat = 0.2
+            // Rayon de recherche généreux (20% de la diagonale normalisée, ou le rayon de ciblage
+            // explicite de l'utilisateur si fourni — voir `trackingRadius`) : sert à la fois de rayon
+            // de recherche autour du point touché à l'écran (premier appel, `previousCenter =
+            // hintPoint`) et de rayon de continuité de suivi image à image ensuite — assez large pour
+            // suivre un déplacement réel, assez serré pour ignorer un nouveau blob de bruit apparu
+            // ailleurs dans le ciel.
+            let maxTrackingDistance = trackingRadius ?? 0.2
             let nearby = candidates.filter { candidate in
                 let center = CGPoint(x: candidate.midX, y: candidate.midY)
                 let dx = center.x - previousCenter.x
                 let dy = center.y - previousCenter.y
                 return (dx * dx + dy * dy).squareRoot() <= maxTrackingDistance
             }
-            if let closest = nearby.min(by: { distanceSquared($0, to: previousCenter) < distanceSquared($1, to: previousCenter) }) {
-                return closest
-            }
+            // BUG CORRIGÉ (2026-09-11, signalé par Jean-David : « ne capture pas les objets hors champ
+            // de l'objet, par exemple un arbre qui bouge ne doit pas être détecté ») : quand une cible
+            // (point touché par l'utilisateur OU continuité de suivi d'une image précédente) est déjà
+            // connue, ne JAMAIS se replier sur « le plus grand blob de l'image entière » si rien n'est
+            // trouvé à proximité — ce repli capturait systématiquement un arbre/objet bien plus grand
+            // que la cible réelle, ailleurs dans le cadre. On préfère sauter cette image (trou dans la
+            // séquence, toléré par le seuil `count >= 3` des appelants) plutôt que de suivre le mauvais
+            // objet.
+            return nearby.min { distanceSquared($0, to: previousCenter) < distanceSquared($1, to: previousCenter) }
         }
 
-        // Pas de détection précédente (première image) ou rien à proximité (objet réapparu ailleurs) :
-        // repli sur le plus grand blob, comme avant.
+        // Aucune cible connue (première image, aucun point touché par l'utilisateur) : seul cas où le
+        // repli sur le plus grand blob plausible reste un point de départ raisonnable.
         return candidates.max { $0.width * $0.height < $1.width * $1.height }
     }
 
@@ -501,7 +525,7 @@ final class MotionDetector {
     /// sur l'image telle quelle, on l'applique sur son NÉGATIF — ainsi la silhouette sombre de l'objet
     /// (la partie la plus foncée du ciel clair) devient la région la plus « brillante » sur l'image
     /// inversée, et on réutilise exactement la même logique de seuillage adaptatif que la nuit.
-    private func darkestBoundingBox(in image: CGImage, previousCenter: CGPoint?) -> CGRect? {
+    private func darkestBoundingBox(in image: CGImage, previousCenter: CGPoint?, trackingRadius: CGFloat? = nil) -> CGRect? {
         let ciImage = CIImage(cgImage: image)
         guard let inverted = invertedImage(ciImage) else { return nil }
         guard let threshold = adaptiveBrightnessThreshold(inverted) else { return nil }
@@ -515,19 +539,17 @@ final class MotionDetector {
             .filter { $0.width * $0.height >= minimumBlobArea && $0.width * $0.height <= maximumBlobArea && isPlausibleObjectShape($0) }
         guard !candidates.isEmpty else { return nil }
 
-        // Même continuité de suivi que `brightestBoundingBox` (voir sa documentation) — évite qu'un
-        // scintillement de contraste fasse sauter la détection d'une silhouette à une autre.
+        // Même continuité de suivi que `brightestBoundingBox` (voir sa documentation, y compris le
+        // bug corrigé sur le repli « plus grand blob » — même correctif appliqué ici).
         if let previousCenter {
-            let maxTrackingDistance: CGFloat = 0.2
+            let maxTrackingDistance = trackingRadius ?? 0.2
             let nearby = candidates.filter { candidate in
                 let center = CGPoint(x: candidate.midX, y: candidate.midY)
                 let dx = center.x - previousCenter.x
                 let dy = center.y - previousCenter.y
                 return (dx * dx + dy * dy).squareRoot() <= maxTrackingDistance
             }
-            if let closest = nearby.min(by: { distanceSquared($0, to: previousCenter) < distanceSquared($1, to: previousCenter) }) {
-                return closest
-            }
+            return nearby.min { distanceSquared($0, to: previousCenter) < distanceSquared($1, to: previousCenter) }
         }
 
         return candidates.max { $0.width * $0.height < $1.width * $1.height }
