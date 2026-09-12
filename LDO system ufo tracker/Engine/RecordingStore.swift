@@ -73,8 +73,16 @@ struct RecordedSession: Identifiable, Codable, Equatable {
     let hintPointX: Double?
     let hintPointY: Double?
     let hintRadius: Double?
+    /// Heure absolue (UTC) du DÉBUT de l'enregistrement (voir `CaptureManager.toggleRecording`) —
+    /// distincte de `createdAt` ci-dessus (capturée à l'ARRÊT, sert au tri/affichage de la liste,
+    /// ne pas réutiliser pour ce champ). Ajoutée lors du pivot du 2026-09-12 : nécessaire pour que
+    /// le recoupement ADS-B/astral (voir `AircraftLookupService`/`CelestialPositionCalculator`) vise
+    /// le bon instant même si l'analyse est lancée longtemps après la captation. `nil` pour un
+    /// enregistrement antérieur à cet ajout (voir le décodeur ci-dessous) — le recoupement retombe
+    /// alors sur l'heure de l'analyse, comme avant.
+    let captureStartedAt: Date?
 
-    init(id: UUID, videoFileName: String, posesFileName: String?, createdAt: Date, mode: CaptureMode, latitude: Double? = nil, longitude: Double? = nil, hintPointX: Double? = nil, hintPointY: Double? = nil, hintRadius: Double? = nil) {
+    init(id: UUID, videoFileName: String, posesFileName: String?, createdAt: Date, mode: CaptureMode, latitude: Double? = nil, longitude: Double? = nil, hintPointX: Double? = nil, hintPointY: Double? = nil, hintRadius: Double? = nil, captureStartedAt: Date? = nil) {
         self.id = id
         self.videoFileName = videoFileName
         self.posesFileName = posesFileName
@@ -85,15 +93,17 @@ struct RecordedSession: Identifiable, Codable, Equatable {
         self.hintPointX = hintPointX
         self.hintPointY = hintPointY
         self.hintRadius = hintRadius
+        self.captureStartedAt = captureStartedAt
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, videoFileName, posesFileName, createdAt, mode, latitude, longitude, hintPointX, hintPointY, hintRadius
+        case id, videoFileName, posesFileName, createdAt, mode, latitude, longitude, hintPointX, hintPointY, hintRadius, captureStartedAt
     }
 
     // Décodeur personnalisé : les enregistrements sauvegardés avant l'ajout du mode Nuit/Jour, de la
-    // position GPS, ou du ciblage en direct n'ont pas ces clés — on retombe sur `.night` / `nil`
-    // (comportement d'avant) plutôt que de faire échouer la lecture de l'index existant.
+    // position GPS, du ciblage en direct, ou de l'heure de début de captation n'ont pas ces clés —
+    // on retombe sur `.night` / `nil` (comportement d'avant) plutôt que de faire échouer la lecture
+    // de l'index existant.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
@@ -106,6 +116,7 @@ struct RecordedSession: Identifiable, Codable, Equatable {
         hintPointX = try container.decodeIfPresent(Double.self, forKey: .hintPointX)
         hintPointY = try container.decodeIfPresent(Double.self, forKey: .hintPointY)
         hintRadius = try container.decodeIfPresent(Double.self, forKey: .hintRadius)
+        captureStartedAt = try container.decodeIfPresent(Date.self, forKey: .captureStartedAt)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -120,6 +131,7 @@ struct RecordedSession: Identifiable, Codable, Equatable {
         try container.encodeIfPresent(hintPointX, forKey: .hintPointX)
         try container.encodeIfPresent(hintPointY, forKey: .hintPointY)
         try container.encodeIfPresent(hintRadius, forKey: .hintRadius)
+        try container.encodeIfPresent(captureStartedAt, forKey: .captureStartedAt)
     }
 
     var captureCoordinate: CLCoordinate? {
@@ -163,11 +175,12 @@ final class RecordingStore: ObservableObject {
     }
 
     @discardableResult
-    func add(videoFileName: String, posesFileName: String?, createdAt: Date, mode: CaptureMode, latitude: Double? = nil, longitude: Double? = nil, hintPoint: CGPoint? = nil, hintRadius: Double? = nil) -> RecordedSession {
+    func add(videoFileName: String, posesFileName: String?, createdAt: Date, mode: CaptureMode, latitude: Double? = nil, longitude: Double? = nil, hintPoint: CGPoint? = nil, hintRadius: Double? = nil, captureStartedAt: Date? = nil) -> RecordedSession {
         let session = RecordedSession(
             id: UUID(), videoFileName: videoFileName, posesFileName: posesFileName, createdAt: createdAt, mode: mode,
             latitude: latitude, longitude: longitude,
-            hintPointX: hintPoint.map { Double($0.x) }, hintPointY: hintPoint.map { Double($0.y) }, hintRadius: hintRadius
+            hintPointX: hintPoint.map { Double($0.x) }, hintPointY: hintPoint.map { Double($0.y) }, hintRadius: hintRadius,
+            captureStartedAt: captureStartedAt
         )
         sessions.insert(session, at: 0)
         persistIndex()

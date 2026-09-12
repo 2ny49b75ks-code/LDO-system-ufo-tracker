@@ -32,6 +32,7 @@ struct RecordingsListView: View {
                             poses: recordingStore.poses(for: session),
                             initialMode: session.mode,
                             captureLocation: session.captureCoordinate,
+                            captureStartedAt: session.captureStartedAt,
                             initialHintPoint: session.hintPoint,
                             initialHintRadius: session.hintRadius.map { CGFloat($0) }
                         )
@@ -68,7 +69,7 @@ struct RecordingsListView: View {
             }
         }
         .fullScreenCover(item: $analysisTarget) { target in
-            AnalysisFlowView(videoURL: target.videoURL, poses: target.poses, initialMode: target.initialMode, captureLocation: target.captureLocation, initialHintPoint: target.initialHintPoint, initialHintRadius: target.initialHintRadius) {
+            AnalysisFlowView(videoURL: target.videoURL, poses: target.poses, initialMode: target.initialMode, captureLocation: target.captureLocation, captureStartedAt: target.captureStartedAt, initialHintPoint: target.initialHintPoint, initialHintRadius: target.initialHintRadius) {
                 // « Nouvelle capture » : referme le flux d'analyse ET cette liste, pour revenir
                 // directement à l'écran caméra prêt à filmer.
                 analysisTarget = nil

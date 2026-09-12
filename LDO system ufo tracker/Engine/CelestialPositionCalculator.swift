@@ -188,7 +188,10 @@ enum CelestialPositionCalculator {
         return BodyPosition(name: name, azimuthDegrees: azRad * 180 / .pi, elevationDegrees: altRad * 180 / .pi)
     }
 
-    private static func localSiderealTimeDegrees(date: Date, longitude: Double) -> Double {
+    /// Non `private` (depuis le pivot du 2026-09-12) : réutilisée par `SatelliteLookupService` avec
+    /// `longitude: 0` pour obtenir le temps sidéral DE GREENWICH (nécessaire à la rotation ECI ->
+    /// ECEF d'un satellite) plutôt que de dupliquer un second calcul de temps sidéral.
+    static func localSiderealTimeDegrees(date: Date, longitude: Double) -> Double {
         let d = daysSinceEpoch(date)
         let sunW = normalizeDegrees(282.9404 + 4.70935E-5 * d)
         let sunM = normalizeDegrees(356.0470 + 0.9856002585 * d)

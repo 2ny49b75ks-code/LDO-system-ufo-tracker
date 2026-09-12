@@ -57,6 +57,13 @@ final class CaptureManager: NSObject, ObservableObject {
     /// uniquement pour situer la capture sur une carte dans les résultats.
     private let locationProvider = LocationProvider()
 
+    /// Heure absolue (UTC) du début du présent enregistrement — voir `toggleRecording` ci-dessous.
+    /// Distincte du timestamp ARKit (`frame.timestamp`, horloge de disponibilité du système, sans
+    /// rapport avec l'heure murale) : nécessaire pour que le recoupement ADS-B/astral (voir
+    /// `AircraftLookupService`/`CelestialPositionCalculator`, pivot du 2026-09-12) vise le bon
+    /// instant même si l'analyse de cette vidéo est lancée longtemps après la captation.
+    private var recordingStartedAtWallClock: Date?
+
     private var frameBuffer: [CapturedFrame] = []
     /// BUG CORRIGÉ (revue de code du 2026-08-27) : `session(_:didUpdate:)` (ARSessionDelegate) est
     /// appelée par ARKit sur sa PROPRE file d'arrière-plan (aucune `session.delegateQueue` n'est
@@ -196,6 +203,7 @@ final class CaptureManager: NSObject, ObservableObject {
             lastCaptureTimestamp = 0
             lastVideoFrameTimestamp = 0
             videoOutputURL = nil
+            recordingStartedAtWallClock = Date()
             locationProvider.captureCurrentLocation()
         } else {
             finishWriting { [weak self] finishedVideoURL in
@@ -363,7 +371,8 @@ final class CaptureManager: NSObject, ObservableObject {
         recordingStore.add(
             videoFileName: fileName, posesFileName: posesFileName, createdAt: Date(), mode: captureMode,
             latitude: location?.coordinate.latitude, longitude: location?.coordinate.longitude,
-            hintPoint: targetHintPoint, hintRadius: targetHintRadius.map { Double($0) }
+            hintPoint: targetHintPoint, hintRadius: targetHintRadius.map { Double($0) },
+            captureStartedAt: recordingStartedAtWallClock
         )
 
         // Sauvegarde également dans Photos/iCloud, comme avant (vidéo brute — les photos AVEC

@@ -120,6 +120,13 @@ struct ResultsView: View {
                             resultRow("Correspondance astronomique", "Direction compatible avec \(matchedBody)" +
                                       (session.celestialMatchSeparationDegrees.map { " (écart : \(String(format: "%.1f", $0))°, approximatif)" } ?? ""))
                         }
+                        if session.aircraftLookupStatus == .matched, let identifier = session.matchedAircraftCallsign ?? session.matchedAircraftICAO24 {
+                            resultRow("Recoupement ADS-B", "Direction compatible avec l'aéronef \(identifier)" +
+                                      (session.aircraftMatchSeparationDegrees.map { " (écart : \(String(format: "%.1f", $0))°)" } ?? "") +
+                                      (session.aircraftMatchDistanceKm.map { " — à ~\(Int($0)) km" } ?? ""))
+                        } else if let aircraftStatusText = aircraftLookupStatusText() {
+                            resultRow("Recoupement ADS-B", aircraftStatusText)
+                        }
                     }
                     Group {
                         if session.speedDefiesPhysics {
@@ -227,9 +234,30 @@ struct ResultsView: View {
     }
 
     private func distanceText() -> String {
-        guard let d = session.estimatedDistanceMeters else { return "Non déterminable (données insuffisantes)" }
+        guard let d = session.estimatedDistanceMeters else { return "Non calculée — voir le recoupement ADS-B/astronomique ci-dessus, plus fiable qu'une estimation par taille supposée" }
         let alt = session.estimatedAltitudeMeters.map { " — Altitude estimée : \(Int($0)) m" } ?? ""
         return "\(Int(d)) m (confiance : \(Int(session.distanceConfidence * 100))% — \(session.distanceMethod))\(alt)"
+    }
+
+    /// Texte du statut de recoupement ADS-B quand aucune correspondance n'a été trouvée — `nil`
+    /// quand il n'y a rien à afficher (recoupement non tenté, ou correspondance trouvée, déjà gérée
+    /// séparément ci-dessus) — voir `AircraftLookupStatus`/`AircraftLookupService` (pivot du
+    /// 2026-09-12). Principe de transparence déjà établi par `VerdictCalculator` : distinguer
+    /// honnêtement un problème réseau, une absence d'avion à proximité, ou une vidéo trop ancienne
+    /// pour qu'une vérification en temps réel ait un sens, plutôt que de laisser un silence ambigu.
+    private func aircraftLookupStatusText() -> String? {
+        switch session.aircraftLookupStatus {
+        case .notAttempted, .matched:
+            return nil
+        case .skippedStaleCapture(let hoursElapsed):
+            return "Vérification en direct impossible : cette vidéo a été captée il y a environ \(Int(hoursElapsed)) h — les données publiques OpenSky ne couvrent que le trafic en temps réel."
+        case .networkUnavailable:
+            return "Vérification impossible (connexion réseau indisponible au moment de l'analyse)."
+        case .queriedNoAircraftNearby:
+            return "Aucun aéronef signalé à proximité au moment de la capture."
+        case .queriedNoBearingMatch(let nearbyCount):
+            return "\(nearbyCount) aéronef(s) signalé(s) à proximité, mais aucun dans l'axe visé."
+        }
     }
 
     private func resultRow(_ title: String, _ value: String) -> some View {

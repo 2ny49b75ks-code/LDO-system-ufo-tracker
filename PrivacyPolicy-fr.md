@@ -1,6 +1,6 @@
 # Politique de confidentialité — LDO (Détecteur d'OVNI)
 
-**Dernière mise à jour : 1er août 2026**
+**Dernière mise à jour : 12 septembre 2026**
 
 Cette politique de confidentialité décrit comment l'application LDO — Détecteur d'OVNI
 (« l'Application ») traite les renseignements lorsque vous l'utilisez.
@@ -9,25 +9,56 @@ Cette politique de confidentialité décrit comment l'application LDO — Détec
 
 ## 1. Résumé en un coup d'œil
 
-- LDO **n'envoie aucune donnée à un serveur externe ni à Anthropic, Apple ou tout autre tiers**.
-- Toutes les analyses (vidéo, photos, calculs de trajectoire, vitesse, forme) sont effectuées
-  **entièrement sur votre appareil**.
+- Depuis la version du pivot technique de septembre 2026, LDO envoie une **position GPS
+  approximative et l'heure de la capture** au réseau public **OpenSky Network**
+  (opensky-network.org), uniquement pour vérifier si un avion connu se trouvait dans la direction
+  observée, et télécharge une liste publique de satellites brillants depuis **CelesTrak**
+  (celestrak.org) pour le même type de vérification — voir la section 2bis ci-dessous pour le
+  détail complet de ces échanges.
+- En dehors de ces deux appels ponctuels, LDO **n'envoie aucune autre donnée à un serveur
+  externe ni à Anthropic, Apple ou tout autre tiers**.
+- Toutes les autres analyses (vidéo, photos, forme, illumination) sont effectuées **entièrement sur
+  votre appareil**.
 - Vos vidéos et photos sont enregistrées **uniquement dans votre photothèque personnelle**
   (appareil + iCloud, si vous avez vous-même activé iCloud Photos dans les réglages de votre iPhone).
 - LDO **n'affiche aucune publicité** et **ne contient aucun outil de suivi publicitaire**.
-- LDO **ne vend et ne partage aucune donnée** avec des tiers.
+- LDO **ne vend et ne partage aucune donnée** avec des tiers, au-delà de l'appel décrit ci-dessus.
 
 ## 2. Renseignements traités par l'Application
 
 | Type de donnée | Utilisation | Où elle est conservée |
 |---|---|---|
-| Vidéo et images (caméra) | Capture de l'objet observé et analyse (forme, trajectoire, vitesse, illumination) | Sur votre appareil, puis dans votre photothèque (appareil + iCloud si activé par vous) |
+| Vidéo et images (caméra) | Capture de l'objet observé et analyse (forme, trajectoire, illumination) | Sur votre appareil, puis dans votre photothèque (appareil + iCloud si activé par vous) |
 | Son (microphone) | Analyse du son associé à la vidéo capturée | Traité localement, conservé uniquement dans le fichier vidéo enregistré dans votre photothèque |
-| Position approximative | Affichage de la trajectoire estimée sur une carte, dans la page de résultats | Traitée localement pour l'affichage de la carte ; non transmise à LDO ni à un tiers |
-| Position et orientation de la caméra (ARKit) | Triangulation angulaire pour estimer la distance et la trajectoire réelle de l'objet | Traitées localement ; conservées uniquement dans le fichier annexe d'un enregistrement LIVE, pour permettre une ré-analyse ultérieure |
+| Position approximative | Affichage de la trajectoire estimée sur une carte, dans la page de résultats ; et recoupement ADS-B (voir section 2bis) | Traitée localement pour l'affichage de la carte ; envoyée à OpenSky Network uniquement pour le recoupement ADS-B |
+| Position et orientation de la caméra (ARKit) | Calcul de la direction réelle observée (boussole), utilisée pour la trajectoire angulaire et le recoupement ADS-B/astronomique | Traitées localement ; conservées uniquement dans le fichier annexe d'un enregistrement LIVE, pour permettre une ré-analyse ultérieure |
 
 Aucun compte utilisateur, aucune adresse courriel et aucun identifiant publicitaire ne sont
 collectés par l'Application elle-même.
+
+## 2bis. Recoupement avec des données publiques externes (OpenSky Network, CelesTrak)
+
+Pour vérifier si un avion réel et actuellement en vol se trouvait dans la direction que vous avez
+filmée, LDO envoie une requête au service public **OpenSky Network** (opensky-network.org),
+uniquement lorsque : (1) votre position GPS est disponible, (2) l'analyse a lieu peu après la
+captation (moins d'une heure — au-delà, LDO n'envoie aucune requête, le service ne couvrant que le
+trafic aérien en temps réel).
+
+Cette requête transmet une zone géographique approximative (calculée à partir de votre position, un
+rayon d'environ 100 km) — **jamais votre position exacte au mètre près, ni aucun autre
+renseignement vous concernant** (pas de nom, pas d'identifiant, pas de vidéo). OpenSky Network
+retourne en réponse la liste des avions actuellement signalés dans cette zone (position, altitude,
+indicatif de vol) — LDO compare cette liste à la direction que vous avez filmée, entièrement sur
+votre appareil, pour déterminer s'il y a une correspondance.
+
+LDO ne contrôle pas les pratiques de confidentialité d'OpenSky Network, un service tiers
+indépendant. Vous pouvez consulter sa propre politique sur opensky-network.org.
+
+Dans les mêmes conditions (position GPS disponible, analyse peu après la captation), LDO télécharge
+aussi la liste publique des satellites les plus brillants visibles à l'œil nu (dont la Station
+spatiale internationale) depuis **CelesTrak** (celestrak.org), pour le même type de comparaison
+directionnelle. Cette liste est la même pour tous les utilisateurs à un moment donné — **aucune
+donnée vous concernant n'est envoyée à CelesTrak**, seule une requête de téléchargement standard.
 
 ## 3. Permissions demandées sur votre appareil
 
@@ -50,8 +81,10 @@ synchronisation directement et n'a accès à votre compte iCloud d'aucune autre 
 
 ## 5. Partage avec des tiers
 
-LDO ne partage, ne vend et ne loue aucun renseignement à des tiers. L'Application ne contient
-aucun kit de développement logiciel (SDK) publicitaire ni outil d'analyse comportementale tiers.
+En dehors du recoupement ADS-B décrit à la section 2bis (une zone géographique approximative et
+l'heure de la capture, envoyées à OpenSky Network), LDO ne partage, ne vend et ne loue aucun
+renseignement à des tiers. L'Application ne contient aucun kit de développement logiciel (SDK)
+publicitaire ni outil d'analyse comportementale tiers.
 
 ## 6. Conservation et suppression des données
 

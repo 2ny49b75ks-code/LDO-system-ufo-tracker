@@ -78,6 +78,55 @@ final class VerdictCalculatorTests: XCTestCase {
         XCTAssertTrue(verdict.factors.contains { $0.localizedCaseInsensitiveContains("météorite") })
     }
 
+    // MARK: - Correspondance ADS-B (pivot du 2026-09-12) : sur-priorité absolue, avant même l'astre connu
+
+    func testAircraftMatchAlwaysReturnsZeroPercent() {
+        var session = AnalysisSession()
+        session.aircraftLookupStatus = .matched
+        session.matchedAircraftCallsign = "AFR123"
+        session.aircraftMatchSeparationDegrees = 4.2
+        // Signaux par ailleurs très "OVNI" ne doivent pas l'emporter sur une identification ADS-B réelle.
+        session.illuminationPattern = "Variable / scintillante irrégulière (≈ 0.2 Hz)"
+        session.linearityR2 = 0.1
+        session.isZigzagTrajectory = true
+
+        let shape = ShapeResult(label: "Forme non identifiée avec certitude", confidence: 0.15, luminousRegion: nil)
+        let verdict = calculator.computeVerdict(session: session, shape: shape, mode: .night)
+
+        XCTAssertEqual(verdict.percent, 0)
+        XCTAssertTrue(verdict.factors.contains { $0.contains("AFR123") })
+    }
+
+    func testAircraftMatchTakesPriorityOverCelestialMatch() {
+        var session = AnalysisSession()
+        session.aircraftLookupStatus = .matched
+        session.matchedAircraftCallsign = "AFR123"
+        session.aircraftMatchSeparationDegrees = 2.0
+        // Correspondance astrale simultanée (cas rare, ex. avion sur le même axe que Vénus) : la
+        // règle ADS-B doit s'appliquer en premier — voir le plan de pivot du 2026-09-12.
+        session.matchedCelestialBody = "Vénus"
+        session.celestialMatchSeparationDegrees = 3.0
+
+        let shape = ShapeResult(label: "Forme non identifiée avec certitude", confidence: 0.15, luminousRegion: nil)
+        let verdict = calculator.computeVerdict(session: session, shape: shape, mode: .night)
+
+        XCTAssertEqual(verdict.percent, 0)
+        XCTAssertTrue(verdict.factors.contains { $0.contains("AFR123") }, "La correspondance ADS-B doit être citée, pas la correspondance astrale")
+    }
+
+    func testMissingAircraftMatchFallsThroughToCelestialRule() {
+        var session = AnalysisSession()
+        session.aircraftLookupStatus = .queriedNoBearingMatch(nearbyCount: 3)
+        session.matchedCelestialBody = "Vénus"
+        session.celestialMatchSeparationDegrees = 3.5
+
+        let shape = ShapeResult(label: "Forme non identifiée avec certitude", confidence: 0.15, luminousRegion: nil)
+        let verdict = calculator.computeVerdict(session: session, shape: shape, mode: .night)
+
+        XCTAssertEqual(verdict.percent, 0, "Sans correspondance ADS-B, la correspondance astrale doit toujours s'appliquer")
+        XCTAssertTrue(verdict.factors.contains { $0.contains("Vénus") })
+    }
+
     // MARK: - Correspondance astronomique : sur-priorité absolue
 
     func testCelestialMatchAlwaysReturnsZeroPercent() {

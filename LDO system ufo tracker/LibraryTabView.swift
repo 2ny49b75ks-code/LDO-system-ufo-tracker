@@ -83,7 +83,7 @@ struct LibraryTabView: View {
             }
         }
         .fullScreenCover(item: $analysisTarget) { target in
-            AnalysisFlowView(videoURL: target.videoURL, poses: target.poses, initialMode: target.initialMode, captureLocation: target.captureLocation) {
+            AnalysisFlowView(videoURL: target.videoURL, poses: target.poses, initialMode: target.initialMode, captureLocation: target.captureLocation, captureStartedAt: target.captureStartedAt) {
                 // « Nouvelle capture » : referme le flux d'analyse et réinitialise l'état
                 // d'importation, prêt pour une prochaine vidéo.
                 analysisTarget = nil
@@ -109,7 +109,11 @@ struct LibraryTabView: View {
             // demande de Jean-David : toujours donner la position de l'iPhone qui a pris la capture —
             // ici, l'iPhone qui a filmé la vidéo importée, lue depuis ses propres métadonnées).
             let location = await Self.extractEmbeddedLocation(from: movie.url)
-            analysisTarget = AnalysisTarget(videoURL: movie.url, poses: [], initialMode: .night, captureLocation: location)
+            // Date de création embarquée (voir le commentaire dédié ci-dessous) : nécessaire pour
+            // que le recoupement ADS-B/astral (pivot du 2026-09-12) vise le bon instant plutôt que
+            // l'heure de l'analyse, qui peut être bien plus tardive pour une vidéo déjà existante.
+            let creationDate = await Self.extractEmbeddedCreationDate(from: movie.url)
+            analysisTarget = AnalysisTarget(videoURL: movie.url, poses: [], initialMode: .night, captureLocation: location, captureStartedAt: creationDate)
         } catch {
             importErrorMessage = "Échec de l'importation : \(error.localizedDescription)"
         }
@@ -132,6 +136,19 @@ struct LibraryTabView: View {
             }
         }
         return nil
+    }
+
+    /// Lit la date de création embarquée dans les métadonnées QuickTime d'une vidéo (présente pour
+    /// une vidéo filmée avec l'app Appareil photo standard) — sert d'heure absolue de captation pour
+    /// le recoupement ADS-B/astral (voir `AircraftLookupService`/`CelestialPositionCalculator`,
+    /// pivot du 2026-09-12), qui sans cela retomberait sur l'heure de l'ANALYSE (potentiellement
+    /// bien plus tardive pour une vidéo déjà existante importée de la bibliothèque). `nil` si
+    /// absente (métadonnées supprimées lors d'un transfert, vidéo produite par une autre app) — le
+    /// recoupement retombe alors sur l'heure de l'analyse, comme avant cet ajout.
+    private static func extractEmbeddedCreationDate(from url: URL) async -> Date? {
+        let asset = AVURLAsset(url: url)
+        guard let creationDateItem = try? await asset.load(.creationDate) else { return nil }
+        return try? await creationDateItem.load(.dateValue)
     }
 
     /// Coordonnées ISO 6709 (format standard des métadonnées de localisation QuickTime/EXIF), ex.

@@ -19,6 +19,12 @@ struct AnalysisTarget: Identifiable {
     /// Position GPS demandée au début de l'enregistrement (voir `LocationProvider`) — `nil` pour un
     /// import bibliothèque, comme la pose ARKit.
     let captureLocation: CLCoordinate?
+    /// Heure absolue (UTC) du début de la captation — voir `CaptureManager.toggleRecording` pour un
+    /// enregistrement LIVE, ou la date de création intégrée aux métadonnées QuickTime pour un import
+    /// bibliothèque (voir `LibraryTabView.extractEmbeddedCreationDate`). `nil` si indisponible
+    /// (ancien enregistrement, métadonnées absentes) — le recoupement ADS-B/astral retombe alors sur
+    /// l'heure de l'analyse (voir `AnalysisEngine`, pivot du 2026-09-12).
+    var captureStartedAt: Date? = nil
     /// Ciblage désigné en direct sur le réticule (voir `TargetReticleOverlay`/`LiveTabView`) — préremplit
     /// `ClipTrimView`, modifiable/retirable par l'utilisateur avant de lancer l'analyse. `nil` pour un
     /// import bibliothèque (aucun ciblage en direct possible sans passer par l'onglet LIVE).
@@ -35,6 +41,7 @@ struct AnalysisFlowView: View {
     let poses: [PersistedFramePose]
     let initialMode: CaptureMode
     let captureLocation: CLCoordinate?
+    var captureStartedAt: Date? = nil
     var initialHintPoint: CGPoint? = nil
     var initialHintRadius: CGFloat? = nil
     let onFinished: () -> Void
@@ -63,7 +70,7 @@ struct AnalysisFlowView: View {
                     onCancel: { dismiss() },
                     onConfirm: { clipRange, mode, hintPoint, hintRadius in
                         step = .analyzing
-                        analyzer.analyze(videoURL: videoURL, poses: poses, clipRange: clipRange, mode: mode, captureLocation: captureLocation, hintPoint: hintPoint, hintRadius: hintRadius) { session in
+                        analyzer.analyze(videoURL: videoURL, poses: poses, clipRange: clipRange, mode: mode, captureLocation: captureLocation, captureStartedAt: captureStartedAt, hintPoint: hintPoint, hintRadius: hintRadius) { session in
                             step = .results(session)
                         }
                     }

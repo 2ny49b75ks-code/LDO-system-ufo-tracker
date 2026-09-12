@@ -24,6 +24,25 @@ final class VerdictCalculator {
     private let confidentKnownShapeThreshold: Double = 0.4
 
     func computeVerdict(session: AnalysisSession, shape: ShapeResult, mode: CaptureMode) -> VerdictResult {
+        // -2. Sur-priorité absolue, avant même la correspondance astronomique (règle -1 ci-dessous) :
+        //     une correspondance avec le réseau ADS-B public (OpenSky Network, voir
+        //     AircraftLookupService) est une identification DIRECTE d'un objet RÉEL et actuellement
+        //     en vol (transpondeur public), pas une simple coïncidence géométrique avec une position
+        //     orbitale approximative — évidence plus forte que n'importe quel autre facteur de cette
+        //     fonction. Remplace, pour le cas où elle s'applique, l'ancienne approche par
+        //     triangulation d'une taille supposée (voir la dépréciation de DistanceEstimator) — un
+        //     recoupement avec des données publiques réelles plutôt qu'une physique devinée à partir
+        //     de pixels (voir le plan de pivot du 2026-09-12).
+        if session.aircraftLookupStatus == .matched,
+           let identifier = session.matchedAircraftCallsign ?? session.matchedAircraftICAO24,
+           let separation = session.aircraftMatchSeparationDegrees {
+            return VerdictResult(
+                label: "Probablement identifié (objet connu)",
+                percent: 0,
+                factors: ["Direction observée compatible avec l'aéronef \(identifier) signalé par transpondeur ADS-B public (OpenSky Network) à ce moment/lieu (écart : \(String(format: "%.1f", separation))°) — identification directe d'un objet réel, aucun autre facteur ne peut compenser"]
+            )
+        }
+
         // -1. Sur-priorité encore plus absolue que la forme ci-dessous : si la direction observée
         //     correspond à la position calculée d'un astre connu (Soleil, Lune, Vénus, Jupiter, étoile
         //     fixe brillante — voir CelestialPositionCalculator), c'est une correspondance GÉOMÉTRIQUE
@@ -107,6 +126,13 @@ final class VerdictCalculator {
         //    même garde que la règle 0 ci-dessus) : un objet dont la distance déduite de sa taille
         //    supposée ne concorde pas avec sa vitesse réelle typique ne se comporte pas comme un
         //    membre ordinaire de sa catégorie, même si sa vitesse mesurée tombe dans une plage connue.
+        //    RÈGLE EN SOMMEIL DEPUIS LE PIVOT DU 2026-09-12 : `session.speedConfidence` vaut
+        //    désormais toujours 0 (la triangulation par taille supposée qui l'alimentait a été
+        //    retirée, voir DistanceEstimator) — cette règle ne se déclenche donc plus jamais.
+        //    Conservée telle quelle (pas supprimée) au cas où une vraie source de vitesse
+        //    ressusciterait ce concept plus tard (ex. vitesse sol rapportée par ADS-B sur une
+        //    correspondance aéronef, voir la règle -2 ci-dessus, qui court-circuite de toute façon ce
+        //    cas avant d'arriver ici).
         if session.speedConfidence > 0,
            !session.speedIsStationary,
            session.distanceCrossCheckAgrees != false,

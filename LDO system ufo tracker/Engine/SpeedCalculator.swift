@@ -6,6 +6,12 @@
 
 import Foundation
 
+/// NOTE (pivot du 2026-09-12) : `distanceMeters` est désormais TOUJOURS `nil` en pratique — la
+/// triangulation par taille supposée qui l'alimentait (voir la dépréciation en tête de
+/// `DistanceEstimator.swift`) a été retirée du pipeline. Cette fonction reste appelée telle quelle
+/// (voir `AnalysisEngine.analyze`) : son repli déjà existant pour une distance inconnue
+/// ("Vitesse non calculable") est réutilisé tel quel, pas une nouvelle dégradation à ajouter ici.
+///
 /// Calcule la vitesse réelle de l'objet (étape 6 du pipeline LDO), à partir de la trajectoire
 /// angulaire déjà produite par TrajectoryCalculator.
 ///

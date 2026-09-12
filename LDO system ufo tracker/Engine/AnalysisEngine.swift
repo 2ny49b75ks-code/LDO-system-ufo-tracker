@@ -73,7 +73,24 @@ struct AnalysisSession: Identifiable, Equatable {
     /// non applicable, ex. vidéo importée sans position GPS ni boussole).
     var matchedCelestialBody: String? = nil
     var celestialMatchSeparationDegrees: Double? = nil
+    /// Recoupement avec le réseau ADS-B public (voir `AircraftLookupService`, pivot du 2026-09-12) —
+    /// identification GÉOMÉTRIQUE d'un avion réel et actuellement en vol dans l'axe visé, plutôt
+    /// qu'une physique devinée à partir d'une taille supposée (voir la dépréciation de
+    /// `DistanceEstimator`). `aircraftLookupStatus` distingue une correspondance trouvée d'un simple
+    /// échec réseau, d'une absence d'avion à proximité, ou d'une vidéo trop ancienne pour qu'une
+    /// vérification en temps réel ait un sens — affiché honnêtement à l'utilisateur (`ResultsView`)
+    /// plutôt que de laisser un silence ambigu.
+    var aircraftLookupStatus: AircraftLookupStatus = .notAttempted
+    var matchedAircraftCallsign: String? = nil
+    var matchedAircraftICAO24: String? = nil
+    var aircraftMatchSeparationDegrees: Double? = nil
+    var aircraftMatchDistanceKm: Double? = nil
 
+    /// Heure absolue de la CAPTATION (pas de l'analyse) quand elle est connue — voir
+    /// `RecordedSession.captureStartedAt`/`LibraryTabView.extractEmbeddedCreationDate` et le
+    /// paramètre `captureStartedAt` d'`AnalysisEngine.analyze` ci-dessous. Repli sur l'heure de
+    /// l'analyse (comportement d'avant le pivot du 2026-09-12) quand elle est inconnue (ancien
+    /// enregistrement, métadonnées absentes).
     var timestamp: Date = Date()
 
     var verdictLabel: String = ""            // "Indéterminé", "Phénomène anomal (OVNI)", etc.
@@ -84,23 +101,36 @@ struct AnalysisSession: Identifiable, Equatable {
 struct CLCoordinate { var lat: Double; var lon: Double }
 
 /// Orchestre l'ensemble du pipeline d'analyse (étapes 2 à 9) en enchaînant les modules dédiés :
-/// MotionDetector -> ShapeClassifier -> DistanceEstimator -> TrajectoryCalculator -> SpeedCalculator
-/// -> IlluminationAnalyzer -> SoundClassifier -> OverlayRenderer -> VerdictCalculator.
+/// MotionDetector -> ShapeClassifier -> AircraftLookupService/SatelliteLookupService/
+/// CelestialPositionCalculator -> TrajectoryCalculator -> SpeedCalculator -> IlluminationAnalyzer ->
+/// SoundClassifier -> OverlayRenderer -> VerdictCalculator.
 ///
-/// ORDRE IMPORTANT : la distance (étape 8) est calculée AVANT la trajectoire (étape 4), car le
-/// calcul des forces G et de la vitesse réels (pas seulement angulaires) a besoin d'une distance,
-/// même approximative. La classification de forme (étape 3) est calculée avant la distance, car
-/// l'estimateur de distance utilise la forme probable pour choisir une taille réelle de référence.
+/// PIVOT DU 2026-09-12 : l'ancienne triangulation par taille réelle supposée (voir la note de
+/// dépréciation en tête de `DistanceEstimator.swift`) a été retirée du pipeline — elle ne peut
+/// mathématiquement pas produire une distance/vitesse/force G fiable à partir d'une seule caméra
+/// 2D sans profondeur connue (le LiDAR de l'iPhone plafonne à ~5 m, inutile pour un objet aérien),
+/// ce qui a causé une série de bugs jamais réglés (21G/399 m/s² pour un avion en vol droit, etc.).
+/// Remplacée par un recoupement avec des données RÉELLES et publiques : réseau ADS-B (voir
+/// `AircraftLookupService`) pour un avion connu dans l'axe visé, à défaut position calculée d'un
+/// astre connu (voir `CelestialPositionCalculator`, déjà existant). La classification de forme
+/// (étape 3) reste calculée avant ce recoupement : sans correspondance ADS-B/astrale, elle demeure
+/// la première ligne d'identification (voir `VerdictCalculator`, règle 0).
 final class AnalysisEngine {
 
     private let motionDetector = MotionDetector()
     private let shapeClassifier = ShapeClassifier()
-    private let distanceEstimator = DistanceEstimator()
     private let trajectoryCalculator = TrajectoryCalculator()
     private let speedCalculator = SpeedCalculator()
     private let illuminationAnalyzer = IlluminationAnalyzer()
     private let soundClassifier = SoundClassifier()
     private let verdictCalculator = VerdictCalculator()
+
+    /// Au-delà de ce délai entre la captation et l'analyse, on ne tente même pas le recoupement
+    /// ADS-B (voir `AircraftLookupService`) : l'accès anonyme d'OpenSky ne couvre que le trafic EN
+    /// TEMPS RÉEL, une requête pour une vidéo plus ancienne ne pourrait de toute façon rien prouver
+    /// — mieux vaut l'annoncer clairement (`AircraftLookupStatus.skippedStaleCapture`) que de
+    /// gaspiller un appel réseau pour un résultat sans valeur.
+    private let maxUsefulLookupAgeHours: Double = 1.0
 
     /// `mode` : choix explicite Nuit/Jour de l'utilisateur (voir `CaptureMode`), détermine la
     /// stratégie de détection de l'objet.
@@ -115,9 +145,14 @@ final class AnalysisEngine {
     /// `hintRadius` : rayon (fraction de la diagonale du cadre, 0...1) de la zone de ciblage — quand
     /// fourni avec `hintPoint`, restreint STRICTEMENT la détection à cette zone (voir le commentaire
     /// détaillé dans `MotionDetector` sur le bug d'un arbre/objet hors cible faussement détecté).
-    func analyze(frames: [CapturedFrame], videoURL: URL?, mode: CaptureMode, captureLocation: CLCoordinate? = nil, hintPoint: CGPoint? = nil, hintRadius: CGFloat? = nil, progress: ((Double, String) -> Void)? = nil) -> AnalysisSession {
+    /// `captureStartedAt` : heure absolue (UTC) du début de la captation, quand elle est connue
+    /// (voir `RecordedSession.captureStartedAt`/`LibraryTabView.extractEmbeddedCreationDate`) —
+    /// utilisée pour `session.timestamp` à la place de l'heure de l'analyse (comportement d'avant le
+    /// pivot du 2026-09-12), qui peut être bien plus tardive pour une vidéo déjà existante. `nil` si
+    /// inconnue (ancien enregistrement, métadonnées absentes) : repli sur l'heure de l'analyse.
+    func analyze(frames: [CapturedFrame], videoURL: URL?, mode: CaptureMode, captureLocation: CLCoordinate? = nil, captureStartedAt: Date? = nil, hintPoint: CGPoint? = nil, hintRadius: CGFloat? = nil, progress: ((Double, String) -> Void)? = nil) -> AnalysisSession {
         var session = AnalysisSession()
-        session.timestamp = Date()
+        session.timestamp = captureStartedAt ?? Date()
         session.captureLocation = captureLocation
 
         let totalSteps = 9.0
@@ -205,52 +240,123 @@ final class AnalysisEngine {
             }
         }
 
-        report(2, "Estimation de la distance…")
-        // Passe préliminaire : vitesse angulaire (degrés/seconde) SEULE, sans distance — purement
-        // géométrique (voir TrajectoryCalculator.angularVelocity), donc calculable avant même
-        // d'avoir une distance. Sert à recouper la distance par taille supposée ci-dessous avec une
-        // deuxième méthode indépendante (voir le commentaire dans DistanceEstimator). La trajectoire
-        // complète (avec forces G) est recalculée à l'étape 4 une fois la distance réconciliée connue.
-        let preliminaryTrajectory = trajectoryCalculator.computeTrajectory(detections: detections, frames: frames, estimatedDistanceMeters: nil)
-        // BUG CORRIGÉ (revue de code du 2026-08-27) : une simple MOYENNE arithmétique sur les
-        // échantillons BRUTS (non lissés, non corroborés) surestime systématiquement la vitesse
-        // angulaire réelle — chaque échantillon est une magnitude non signée (voir `angularVelocity`),
-        // le bruit de suivi ne peut donc que la GONFLER, jamais l'annuler par compensation +/-. Tout
-        // autre consommateur de ce même signal dans le pipeline (virages, zigzag, forces G) élargit
-        // d'abord la fenêtre et/ou filtre le bruit avant de s'y fier — ici, une vitesse gonflée fait
-        // chuter la distance triangulée par vitesse en dessous de la distance par taille, faisant
-        // échouer à tort le recoupement (`distanceCrossCheckAgrees = false`) sur un avion pourtant
-        // ordinaire, ce qui bloque les règles de verdict « objet connu, 0% » qui l'exigent. La
-        // MÉDIANE, robuste à un écart de suivi isolé sur une seule image (le bruit le plus courant
-        // ici), remplace la moyenne sans exiger de nouveau paramètre à calibrer.
-        let averageAngularVelocity: Double? = {
-            let values = preliminaryTrajectory.angularVelocitiesDegPerS.map { $0.value }.sorted()
-            guard !values.isEmpty else { return nil }
-            let mid = values.count / 2
-            return values.count % 2 == 0 ? (values[mid - 1] + values[mid]) / 2 : values[mid]
-        }()
+        report(2, "Recoupement ADS-B et astres…")
+        // Étape 8 (remplace l'ancienne triangulation par taille supposée — voir la note de
+        // dépréciation en tête de DistanceEstimator.swift) : direction réelle observée (boussole
+        // ARKit, voir TrajectoryCalculator.observedAzimuthElevation), comparée à deux sources de
+        // vérité externes : 1) le réseau ADS-B public (AircraftLookupService/OpenSky) pour un avion
+        // réel et actuellement en vol dans l'axe visé ; 2) à défaut, la position calculée d'un astre
+        // connu (CelestialPositionCalculator, demande explicite de Jean-David du 2026-08-09— Vénus
+        // est la cause n°1 de signalements dans le monde). Les deux nécessitent la position GPS ET
+        // la direction observée — absentes toutes les deux pour une vidéo importée sans métadonnées,
+        // dans quel cas ce recoupement est simplement ignoré.
+        let observedDirection = trajectoryCalculator.observedAzimuthElevation(detections: detections, frames: frames)
 
-        // Étape 8 (avancée ici, voir DistanceEstimator.swift) : triangulation angulaire à partir
-        // d'une taille réelle supposée selon la forme détectée (pas de LiDAR, portée trop courte),
-        // recoupée avec la vitesse réelle typique du type détecté quand c'est possible.
-        let dist = distanceEstimator.estimateDistanceAndAltitude(detections: detections, frames: frames, shapeLabel: shape.label, averageAngularVelocityDegPerS: averageAngularVelocity)
-        session.estimatedDistanceMeters = dist.distanceMeters
-        session.estimatedAltitudeMeters = dist.altitudeMeters
-        session.distanceConfidence = dist.confidence
-        session.distanceMethod = dist.method
-        session.distanceCrossCheckAgrees = dist.crossCheckAgrees
-        // BUG CORRIGÉ : le seuil était `> 0.3` alors que `DistanceEstimator.confidence` ne dépasse
-        // jamais 0.3 (0.15 pour une forme non identifiée, 0.3 au mieux pour une forme identifiée) —
-        // la vitesse et les forces G étaient donc TOUJOURS "non calculables", peu importe la qualité
-        // réelle de l'estimation. `> 0` laisse passer toute distance réellement calculée (les seuls
-        // cas à confiance 0 sont "Aucune donnée" / "Taille apparente nulle", de vrais échecs), tout
-        // en gardant l'indice de confiance affiché à l'utilisateur pour juger de sa fiabilité.
-        let reliableDistance = dist.confidence > 0 ? dist.distanceMeters : nil
+        if let captureLocation, let observed = observedDirection {
+            let hoursSinceCapture = max(0, Date().timeIntervalSince(session.timestamp) / 3600)
+            if hoursSinceCapture > maxUsefulLookupAgeHours {
+                // Accès anonyme OpenSky = trafic en temps réel seulement (voir AircraftLookupService)
+                // — inutile de dépenser une requête pour une vidéo trop ancienne pour qu'elle puisse
+                // rien prouver ; on l'annonce clairement plutôt que de laisser un silence ambigu.
+                session.aircraftLookupStatus = .skippedStaleCapture(hoursElapsed: hoursSinceCapture)
+            } else {
+                // Pontage synchrone du même type que celui déjà utilisé et documenté pour
+                // SoundClassifier plus bas (acceptable ici pour la même raison : l'analyse tourne
+                // déjà hors du fil principal, voir SessionAnalyzer) — PAS l'anti-patron
+                // Task+sémaphore qui avait causé le plantage de l'ancienne fonctionnalité RA : ici on
+                // bloque un thread d'arrière-plan déjà hors fil principal, en attendant un callback
+                // réseau qui ne dépend jamais du MainActor.
+                let aircraftSemaphore = DispatchSemaphore(value: 0)
+                var lookupResult: Result<[AircraftLookupService.AircraftCandidate], AircraftLookupService.LookupError> = .failure(.networkUnavailable)
+                AircraftLookupService.fetchAircraftStates(around: captureLocation) { result in
+                    lookupResult = result
+                    aircraftSemaphore.signal()
+                }
+                _ = aircraftSemaphore.wait(timeout: .now() + 8)
+
+                switch lookupResult {
+                case .failure:
+                    session.aircraftLookupStatus = .networkUnavailable
+                case .success(let candidates):
+                    if candidates.isEmpty {
+                        session.aircraftLookupStatus = .queriedNoAircraftNearby
+                    } else if let match = AircraftLookupService.closestMatch(
+                        candidates: candidates, observerLocation: captureLocation,
+                        observedAzimuthDegrees: observed.azimuthDegrees, observedElevationDegrees: observed.elevationDegrees
+                    ) {
+                        session.matchedAircraftCallsign = match.candidate.callsign
+                        session.matchedAircraftICAO24 = match.candidate.icao24
+                        session.aircraftMatchSeparationDegrees = match.separationDegrees
+                        session.aircraftMatchDistanceKm = match.distanceKm
+                        session.aircraftLookupStatus = .matched
+                    } else {
+                        session.aircraftLookupStatus = .queriedNoBearingMatch(nearbyCount: candidates.count)
+                    }
+                }
+            }
+
+            // Recoupement astre connu — effectué même si le recoupement ADS-B ci-dessus a
+            // échoué/rien trouvé : les deux sont indépendants, et la règle de verdict la plus
+            // prioritaire (ADS-B, voir VerdictCalculator) l'emporte de toute façon si les deux
+            // correspondent en même temps.
+            var candidates = CelestialPositionCalculator.visiblePositions(at: session.timestamp, latitude: captureLocation.lat, longitude: captureLocation.lon)
+
+            // Recoupement satellites connus (ISS, objets les plus brillants visibles à l'œil nu —
+            // voir SatelliteLookupService, pivot du 2026-09-12) : ajoutés directement à la même liste
+            // de candidats que les astres ci-dessus, comparés par la MÊME logique de correspondance
+            // directionnelle déjà en place — aucune nouvelle règle de verdict nécessaire. Soumis à la
+            // même limite de fraîcheur que le recoupement ADS-B (voir maxUsefulLookupAgeHours
+            // ci-dessus) : la propagation orbitale simplifiée utilisée ici (voir l'avertissement en
+            // tête de SatelliteLookupService.swift) perd en précision à mesure que les éléments
+            // orbitaux vieillissent.
+            if hoursSinceCapture <= maxUsefulLookupAgeHours {
+                let satelliteSemaphore = DispatchSemaphore(value: 0)
+                var satelliteResult: Result<[CelestialPositionCalculator.BodyPosition], SatelliteLookupService.LookupError> = .failure(.networkUnavailable)
+                SatelliteLookupService.fetchVisibleSatellitePositions(at: session.timestamp, observerLatitude: captureLocation.lat, observerLongitude: captureLocation.lon) { result in
+                    satelliteResult = result
+                    satelliteSemaphore.signal()
+                }
+                _ = satelliteSemaphore.wait(timeout: .now() + 8)
+                if case .success(let satellitePositions) = satelliteResult {
+                    candidates.append(contentsOf: satellitePositions)
+                }
+            }
+            // Tolérance volontairement large (12°) : cumul de l'imprécision de la boussole ARKit (peut
+            // dériver de plusieurs degrés, surtout près d'interférences magnétiques) et de la précision
+            // des formules orbitales à basse précision utilisées pour les astres (~1°) — mieux vaut
+            // manquer une vraie correspondance que d'en affirmer une fausse à tort. Réutilisée telle
+            // quelle pour les satellites (voir ci-dessus) bien que leur propagation simplifiée soit
+            // moins précise que les formules planétaires — voir l'avertissement de précision en tête
+            // de SatelliteLookupService.swift, qui recommande une validation sur appareil réel.
+            let matchToleranceDegrees = 12.0
+            if let closest = candidates.min(by: {
+                AngularGeometry.angularSeparationDegrees(az1: observed.azimuthDegrees, el1: observed.elevationDegrees, az2: $0.azimuthDegrees, el2: $0.elevationDegrees)
+                < AngularGeometry.angularSeparationDegrees(az1: observed.azimuthDegrees, el1: observed.elevationDegrees, az2: $1.azimuthDegrees, el2: $1.elevationDegrees)
+            }) {
+                let separation = AngularGeometry.angularSeparationDegrees(az1: observed.azimuthDegrees, el1: observed.elevationDegrees, az2: closest.azimuthDegrees, el2: closest.elevationDegrees)
+                if separation <= matchToleranceDegrees {
+                    session.matchedCelestialBody = closest.name
+                    session.celestialMatchSeparationDegrees = separation
+                }
+            }
+        }
+
+        // Distance/altitude par triangulation ne sont plus calculées (voir la dépréciation de
+        // DistanceEstimator ci-dessus) — champs conservés pour l'affichage (voir ResultsView), mais
+        // toujours vides désormais : le recoupement ADS-B ci-dessus identifie un objet réel plutôt
+        // que de deviner sa taille pour en déduire une distance.
+        session.estimatedDistanceMeters = nil
+        session.estimatedAltitudeMeters = nil
+        session.distanceConfidence = 0
+        session.distanceMethod = "Non calculée (voir recoupement ADS-B/astres ci-dessus, plus fiable qu'une estimation par taille supposée)"
+        session.distanceCrossCheckAgrees = nil
 
         report(3, "Calcul de la trajectoire…")
-        // Étape 4 : trajectoire réelle (angulaire, corrigée du mouvement de la caméra) + forces G
-        // (voir TrajectoryCalculator.swift).
-        let traj = trajectoryCalculator.computeTrajectory(detections: detections, frames: frames, estimatedDistanceMeters: reliableDistance, distanceConfidence: dist.confidence)
+        // Étape 4 : trajectoire réelle (angulaire, corrigée du mouvement de la caméra) — voir
+        // TrajectoryCalculator.swift. Sans distance fiable (triangulation retirée, voir ci-dessus),
+        // la force G retombe sur son repli déjà existant (0, confiance 0) plutôt que sur une valeur
+        // dérivée d'une distance devinée.
+        let traj = trajectoryCalculator.computeTrajectory(detections: detections, frames: frames, estimatedDistanceMeters: nil)
         session.trajectory = traj.points2D
         session.isLinear = traj.isLinear
         session.linearityR2 = traj.linearityR2
@@ -260,31 +366,6 @@ final class AnalysisEngine {
         session.curvatureEvents = traj.curvatureEvents
         session.isZigzagTrajectory = traj.isZigzagPattern
         session.trajectoryReversalCount = traj.directionReversalCount
-
-        // Recoupement astre connu (Soleil, Lune, Vénus, Jupiter, étoiles fixes brillantes) — demande
-        // explicite de Jean-David (2026-08-09) : distinguer un vrai OVNI stationnaire d'une étoile ou
-        // planète brillante (Vénus est la cause n°1 de signalements dans le monde). Nécessite la
-        // position GPS ET la direction réelle observée (boussole ARKit, voir
-        // TrajectoryCalculator.observedAzimuthElevation) — absentes toutes les deux pour une vidéo
-        // importée de la bibliothèque, dans quel cas ce recoupement est simplement ignoré (nil).
-        if let captureLocation, let observed = trajectoryCalculator.observedAzimuthElevation(detections: detections, frames: frames) {
-            let candidates = CelestialPositionCalculator.visiblePositions(at: session.timestamp, latitude: captureLocation.lat, longitude: captureLocation.lon)
-            // Tolérance volontairement large (12°) : cumul de l'imprécision de la boussole ARKit (peut
-            // dériver de plusieurs degrés, surtout près d'interférences magnétiques) et de la précision
-            // des formules orbitales à basse précision utilisées ci-dessus (~1°) — mieux vaut manquer
-            // une vraie correspondance que d'en affirmer une fausse à tort.
-            let matchToleranceDegrees = 12.0
-            if let closest = candidates.min(by: {
-                angularSeparationDegrees(az1: observed.azimuthDegrees, el1: observed.elevationDegrees, az2: $0.azimuthDegrees, el2: $0.elevationDegrees)
-                < angularSeparationDegrees(az1: observed.azimuthDegrees, el1: observed.elevationDegrees, az2: $1.azimuthDegrees, el2: $1.elevationDegrees)
-            }) {
-                let separation = angularSeparationDegrees(az1: observed.azimuthDegrees, el1: observed.elevationDegrees, az2: closest.azimuthDegrees, el2: closest.elevationDegrees)
-                if separation <= matchToleranceDegrees {
-                    session.matchedCelestialBody = closest.name
-                    session.celestialMatchSeparationDegrees = separation
-                }
-            }
-        }
 
         report(4, "Analyse de l'illumination…")
         // Étape 5 : illumination et couleur (voir IlluminationAnalyzer.swift), échantillonnée sur
@@ -300,8 +381,10 @@ final class AnalysisEngine {
         session.illuminationKelvin = illum.estimatedKelvin
 
         report(5, "Calcul de la vitesse…")
-        // Étape 6 : vitesse (voir SpeedCalculator.swift), dérivée de la même trajectoire angulaire.
-        let speed = speedCalculator.estimateSpeed(trajectory: traj, distanceMeters: reliableDistance)
+        // Étape 6 : vitesse (voir SpeedCalculator.swift). `distanceMeters` toujours `nil` désormais
+        // (triangulation retirée, voir ci-dessus) — retombe sur le repli déjà existant de
+        // SpeedCalculator ("Vitesse non calculable"), pas une nouvelle dégradation.
+        let speed = speedCalculator.estimateSpeed(trajectory: traj, distanceMeters: nil)
         session.estimatedSpeedKmh = speed.averageKmh
         session.maxSpeedKmh = speed.maxKmh
         session.speedIsStationary = speed.isStationary
@@ -349,19 +432,6 @@ final class AnalysisEngine {
 
         report(9, "Terminé")
         return session
-    }
-
-    /// Distance angulaire (degrés) entre deux directions données en azimut/élévation — via leurs
-    /// vecteurs unitaires, pas une simple différence de coordonnées (fausse près du zénith où
-    /// l'azimut perd sa signification). Utilisée pour comparer la direction observée à la position
-    /// calculée d'un astre connu (voir `CelestialPositionCalculator`).
-    private func angularSeparationDegrees(az1: Double, el1: Double, az2: Double, el2: Double) -> Double {
-        let az1Rad = az1 * .pi / 180, el1Rad = el1 * .pi / 180
-        let az2Rad = az2 * .pi / 180, el2Rad = el2 * .pi / 180
-        let x1 = cos(el1Rad) * sin(az1Rad), y1 = cos(el1Rad) * cos(az1Rad), z1 = sin(el1Rad)
-        let x2 = cos(el2Rad) * sin(az2Rad), y2 = cos(el2Rad) * cos(az2Rad), z2 = sin(el2Rad)
-        let dot = max(-1, min(1, x1 * x2 + y1 * y2 + z1 * z2))
-        return acos(dot) * 180 / .pi
     }
 
     /// Distance moyenne entre les détections d'un objet suivi et un point de référence (repère

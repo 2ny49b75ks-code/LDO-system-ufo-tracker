@@ -8,7 +8,17 @@ import Foundation
 import CoreGraphics
 import simd
 
-/// Étape 8 : distance et hauteur de l'objet, par **triangulation angulaire** uniquement — pas de
+/// DÉPRÉCIÉ DEPUIS LE PIVOT DU 2026-09-12 — PLUS APPELÉ PAR `AnalysisEngine`.
+/// La triangulation par taille réelle supposée ci-dessous ne peut mathématiquement pas produire une
+/// distance fiable à partir d'une seule caméra 2D sans profondeur connue (le LiDAR de l'iPhone
+/// plafonne à ~5 m, inutile pour un objet aérien) — c'était la cause racine documentée d'une série
+/// de bugs jamais réglés malgré des mois de correctifs successifs (21G/399 m/s² pour un avion en
+/// vol droit, etc.). Remplacée par un recoupement avec des données réelles et publiques : réseau
+/// ADS-B pour un avion connu dans l'axe visé (voir `AircraftLookupService`), à défaut position
+/// calculée d'un astre connu (voir `CelestialPositionCalculator`, déjà existant). Fichier conservé
+/// tel quel (pas supprimé, diff plus risqué pour aucun gain fonctionnel) plutôt que réutilisé.
+///
+/// Étape 8 (historique) : distance et hauteur de l'objet, par **triangulation angulaire** uniquement — pas de
 /// LiDAR, dont la portée réelle (~5-8 m) est bien trop courte pour un objet aérien observé à
 /// grande distance (le cas quasi systématique en observation de phénomène dans le ciel).
 ///
