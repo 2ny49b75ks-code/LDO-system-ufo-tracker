@@ -7,10 +7,13 @@
 import SwiftUI
 
 /// Réticule de ciblage superposable sur un aperçu vidéo (caméra en direct ou lecteur de relecture) :
-/// un tap place/déplace le centre, une poignée sur le bord du cercle permet de l'agrandir/rétrécir —
-/// demande explicite de Jean-David (2026-09-11) : « toucher la cible à l'écran, c'est la zone à
-/// analyser, en mode capture et en mode analyse » + choix explicite de la poignée de redimensionnement
-/// plutôt qu'un second geste de pincement (qui entrerait en conflit avec le zoom).
+/// un tap place le centre, GLISSER LE DOIGT EN LE MAINTENANT sur la cible la déplace en continu vers
+/// une nouvelle destination (pas seulement un saut instantané à la fin du geste — demande explicite
+/// de Jean-David, 2026-09-13 : « tenir la cible pour la déplacer vers destination »), et une poignée
+/// sur le bord du cercle permet de l'agrandir/rétrécir — demande explicite de Jean-David (2026-09-11) :
+/// « toucher la cible à l'écran, c'est la zone à analyser, en mode capture et en mode analyse » +
+/// choix explicite de la poignée de redimensionnement plutôt qu'un second geste de pincement (qui
+/// entrerait en conflit avec le zoom).
 ///
 /// Composant partagé entre `LiveTabView` (ciblage en direct, avant/pendant l'enregistrement) et
 /// `ClipTrimView` (ciblage après l'enregistrement, en choisissant l'extrait à analyser) — évite de
@@ -40,16 +43,18 @@ struct TargetReticleOverlay: View {
 
     var body: some View {
         ZStack {
-            // Zone de tap : place/déplace le centre. `contentShape` couvre tout le cadre pour que le
-            // tap fonctionne n'importe où, pas seulement là où un cercle existe déjà.
-            // `DragGesture(minimumDistance: 0).onEnded` plutôt que `.onTapGesture` : même geste déjà
-            // éprouvé dans `ClipTrimView` pour coexister avec les contrôles natifs AVKit en dessous
-            // (voir son commentaire) — un simple tap déclenche `onEnded` sans jamais glisser le repère.
+            // Zone de tap/glissement : place le centre au premier contact, puis le SUIT en continu
+            // tant que le doigt reste posé (`onChanged`, pas seulement `onEnded`) — pour qu'on puisse
+            // « tenir » la cible et la faire glisser vers une nouvelle destination avec un retour
+            // visuel immédiat, plutôt qu'un simple saut instantané une fois le doigt relevé. Un tap
+            // isolé continue de fonctionner tel quel : `onChanged` se déclenche dès le premier contact
+            // même sans glissement (`minimumDistance: 0`). `contentShape` couvre tout le cadre pour
+            // que le geste fonctionne n'importe où, pas seulement là où un cercle existe déjà.
             Color.clear
                 .contentShape(Rectangle())
                 .simultaneousGesture(
                     DragGesture(minimumDistance: 0, coordinateSpace: .named(coordinateSpaceName))
-                        .onEnded { value in
+                        .onChanged { value in
                             // Ignore les touchers qui commencent près de la poignée existante (voir
                             // `handlePosition` ci-dessous) : cette zone doit rester réservée au
                             // redimensionnement, pas au déplacement du centre.

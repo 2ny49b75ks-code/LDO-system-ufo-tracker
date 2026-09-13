@@ -17,7 +17,7 @@ struct ContentView: View {
     var body: some View {
         // BUG CORRIGÉ (revue de code du 2026-08-27) : un `switch` dans un `@ViewBuilder` change
         // l'IDENTITÉ structurelle de la vue à chaque bascule — SwiftUI détruit entièrement
-        // `LiveTabView` (et son `@State`, dont `zoomAtGestureStart`/`zoomAtButtonDragStart`) en
+        // `LiveTabView` (et son `@State`, dont `zoomAtGestureStart`) en
         // passant à Bibliothèque, puis en recrée une INSTANCE NEUVE au retour sur LIVE, ré-exécutant
         // `.onAppear` (réinitialise le suivi ARKit et redemande le GPS à chaque fois — un aller-retour
         // d'onglet pendant une observation en cours provoque un scintillement caméra visible ET un

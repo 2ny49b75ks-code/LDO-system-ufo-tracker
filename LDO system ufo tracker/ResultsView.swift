@@ -128,19 +128,15 @@ struct ResultsView: View {
                             resultRow("Recoupement ADS-B", aircraftStatusText)
                         }
                     }
+                    // Accélération linéaire et force G RETIRÉES de l'affichage (demande explicite de
+                    // Jean-David, 2026-09-13 : « ces 2 calculs ont des résultats farfelus ») — ces deux
+                    // valeurs dérivaient de la triangulation par taille supposée, déjà retirée du calcul
+                    // (voir la dépréciation de DistanceEstimator, pivot du 2026-09-12) : elles valent
+                    // désormais toujours 0/non calculable, les afficher n'apporterait plus rien à
+                    // l'utilisateur. Les champs `AnalysisSession.estimatedGForce`/`maxLinearAccelerationMS2`
+                    // restent calculés en interne (voir VerdictCalculator, règles désormais en sommeil)
+                    // mais ne sont plus montrés ici.
                     Group {
-                        if session.speedDefiesPhysics {
-                            resultRow("Accélération linéaire", "⚠️ \(Int(session.maxLinearAccelerationMS2)) m/s² soutenus — dépasse la performance des aéronefs connus")
-                        } else {
-                            resultRow("Accélération linéaire", "\(Int(session.maxLinearAccelerationMS2)) m/s²")
-                        }
-                        if session.hasImpossibleGForce {
-                            resultRow("Force G estimée", "⚠️ \(String(format: "%.1f", session.estimatedGForce)) G — dépasse la tolérance humaine (~9G) — confiance : \(Int(session.gForceConfidence * 100))%")
-                        } else if session.gForceConfidence > 0 {
-                            resultRow("Force G estimée", "\(String(format: "%.1f", session.estimatedGForce)) G — confiance : \(Int(session.gForceConfidence * 100))%")
-                        } else {
-                            resultRow("Force G estimée", "Non calculable (distance à l'objet trop incertaine)")
-                        }
                         resultRow("Son", session.soundClassification)
                     }
 

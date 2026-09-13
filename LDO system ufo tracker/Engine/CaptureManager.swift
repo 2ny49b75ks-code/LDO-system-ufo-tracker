@@ -12,6 +12,7 @@ import ARKit
 import CoreImage
 import CoreLocation
 import simd
+import UIKit
 
 /// Étape 1 : capture vidéo HD via ARKit (position/orientation de caméra à chaque image, utilisées
 /// pour la triangulation angulaire — voir DistanceEstimator). L'enregistrement se contente de
@@ -150,10 +151,34 @@ final class CaptureManager: NSObject, ObservableObject {
         locationProvider.captureCurrentLocation()
     }
 
+    /// BUG CORRIGÉ (signalé par Jean-David, 2026-09-13 : bandes noires en haut/bas des vidéos et
+    /// photos exportées vers Photos) : l'ancienne sélection retenait le format ARKit avec le PLUS de
+    /// pixels au total, sans égard à son rapport largeur/hauteur — un format proche du 4:3 (ex.
+    /// 1920×1440) l'emportait souvent sur un format proche du 16:9 (1920×1080) à cause de son nombre
+    /// de pixels plus élevé. Ça passait inaperçu PENDANT la capture : `ARSCNView` (voir
+    /// `CameraPreviewView`) recadre TOUJOURS le flux caméra pour remplir l'écran, quel que soit le
+    /// format choisi, masquant complètement l'écart. Mais le buffer BRUT enregistré (avant ce
+    /// recadrage d'affichage) garde son rapport d'aspect réel — Photos, contrairement à `ARSCNView`,
+    /// n'affiche jamais un média en le recadrant : il l'ajuste en conservant son rapport d'aspect,
+    /// laissant des bandes noires si ce rapport ne correspond pas à celui de l'écran de l'appareil.
+    /// On choisit maintenant le format ARKit dont le rapport d'aspect se rapproche le plus de celui de
+    /// l'écran (ce que l'aperçu en direct montre réellement) — seulement à égalité proche (2%), on
+    /// départage par le plus grand nombre de pixels, pour ne pas sacrifier la résolution pour un écart
+    /// d'aspect négligeable.
     private static func bestAvailableVideoFormat() -> ARConfiguration.VideoFormat? {
-        ARWorldTrackingConfiguration.supportedVideoFormats.max {
-            $0.imageResolution.width * $0.imageResolution.height
-                < $1.imageResolution.width * $1.imageResolution.height
+        let screenBounds = UIScreen.main.bounds
+        let screenAspect = max(screenBounds.width, screenBounds.height) / max(min(screenBounds.width, screenBounds.height), 1)
+
+        return ARWorldTrackingConfiguration.supportedVideoFormats.min { lhs, rhs in
+            let lhsAspect = lhs.imageResolution.width / max(lhs.imageResolution.height, 1)
+            let rhsAspect = rhs.imageResolution.width / max(rhs.imageResolution.height, 1)
+            let lhsDelta = abs(lhsAspect - screenAspect)
+            let rhsDelta = abs(rhsAspect - screenAspect)
+            if abs(lhsDelta - rhsDelta) < 0.02 {
+                return lhs.imageResolution.width * lhs.imageResolution.height
+                    > rhs.imageResolution.width * rhs.imageResolution.height
+            }
+            return lhsDelta < rhsDelta
         }
     }
 
