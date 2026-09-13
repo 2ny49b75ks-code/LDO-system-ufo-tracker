@@ -83,6 +83,11 @@ struct AnalysisSession: Identifiable, Equatable {
     var matchedAircraftICAO24: String? = nil
     var aircraftMatchSeparationDegrees: Double? = nil
     var aircraftMatchDistanceKm: Double? = nil
+    /// Vitesse sol RÉELLE (km/h), rapportée par le transpondeur de l'avion identifié — pas une
+    /// estimation dérivée de pixels. `nil` si aucune correspondance, ou si l'avion identifié ne
+    /// rapporte pas sa vitesse (rare). Affichée en priorité sur `estimatedSpeedKmh`/`maxSpeedKmh`
+    /// (toujours 0 depuis le retrait de la triangulation, voir ResultsView) quand disponible.
+    var matchedAircraftGroundSpeedKmh: Double? = nil
 
     /// Heure absolue de la CAPTATION (pas de l'analyse) quand elle est connue — voir
     /// `RecordedSession.captureStartedAt`/`LibraryTabView.extractEmbeddedCreationDate` et le
@@ -280,6 +285,7 @@ final class AnalysisEngine {
                         session.matchedAircraftICAO24 = match.candidate.icao24
                         session.aircraftMatchSeparationDegrees = match.separationDegrees
                         session.aircraftMatchDistanceKm = match.distanceKm
+                        session.matchedAircraftGroundSpeedKmh = match.candidate.groundSpeedMS.map { $0 * 3.6 }
                         session.aircraftLookupStatus = .matched
                     } else {
                         session.aircraftLookupStatus = .queriedNoBearingMatch(nearbyCount: candidates.count)

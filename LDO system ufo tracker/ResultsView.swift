@@ -68,10 +68,9 @@ struct ResultsView: View {
                                   " (\(Int(session.shapeConfidence * 100))% de confiance)")
                         resultRow("Illumination", "\(session.illuminationPattern) — couleur : \(session.illuminationColor)")
                         resultRow("Direction", session.isLinear ? "Trajectoire rectiligne continue (R²: \(String(format: "%.2f", session.linearityR2)))" : "Trajectoire asymétrique / changements brusques (R²: \(String(format: "%.2f", session.linearityR2)))")
-                        resultRow("Vitesse", "Moyenne : \(Int(session.estimatedSpeedKmh)) km/h — Max : \(Int(session.maxSpeedKmh)) km/h" +
-                                  (session.speedConfidence > 0 ? " (confiance : \(Int(session.speedConfidence * 100))%)" : ""))
+                        resultRow("Vitesse", speedText())
                         resultRow("Distance estimée", distanceText())
-                        resultRow("Comparaison", session.speedComparisonLabel)
+                        resultRow("Comparaison", comparisonText())
                         if let matchedBody = session.matchedCelestialBody {
                             resultRow("Correspondance astronomique", "Direction compatible avec \(matchedBody)" +
                                       (session.celestialMatchSeparationDegrees.map { " (écart : \(String(format: "%.1f", $0))°, approximatif)" } ?? ""))
@@ -185,10 +184,47 @@ struct ResultsView: View {
                 }
     }
 
+    /// Vitesse RÉELLE rapportée par le transpondeur ADS-B en priorité (voir
+    /// `AnalysisSession.matchedAircraftGroundSpeedKmh`, pivot du 2026-09-12) — bien plus fiable
+    /// qu'une estimation à partir de pixels. `estimatedSpeedKmh`/`maxSpeedKmh` valent toujours 0
+    /// depuis le retrait de la triangulation par taille supposée (voir la dépréciation de
+    /// `DistanceEstimator`) : sans correspondance ADS-B, on l'indique clairement plutôt que
+    /// d'afficher un « 0 km/h » trompeur.
+    private func speedText() -> String {
+        if let groundSpeedKmh = session.matchedAircraftGroundSpeedKmh {
+            return "\(Int(groundSpeedKmh)) km/h (vitesse sol réelle, signalée par transpondeur ADS-B)"
+        }
+        return "Non calculée — voir le recoupement ADS-B/astronomique ci-dessous"
+    }
+
+    /// Distance RÉELLE au dernier point signalé par le transpondeur en priorité (voir
+    /// `AnalysisSession.aircraftMatchDistanceKm`) — sinon, l'ancienne triangulation par taille
+    /// supposée (toujours vide depuis le pivot, gardée pour un éventuel avion identifié par forme
+    /// seule sans correspondance ADS-B, cas aujourd'hui inatteignable mais pas supprimé pour autant).
     private func distanceText() -> String {
-        guard let d = session.estimatedDistanceMeters else { return "Non calculée — voir le recoupement ADS-B/astronomique ci-dessus, plus fiable qu'une estimation par taille supposée" }
+        if let distanceKm = session.aircraftMatchDistanceKm {
+            return "\(String(format: "%.1f", distanceKm)) km (distance réelle, signalée par transpondeur ADS-B)"
+        }
+        guard let d = session.estimatedDistanceMeters else { return "Non calculée — voir le recoupement ADS-B/astronomique ci-dessous" }
         let alt = session.estimatedAltitudeMeters.map { " — Altitude estimée : \(Int($0)) m" } ?? ""
         return "\(Int(d)) m (confiance : \(Int(session.distanceConfidence * 100))% — \(session.distanceMethod))\(alt)"
+    }
+
+    /// BUG CORRIGÉ (signalé par Jean-David, 2026-09-13 : « la comparaison doit arrimer à forme
+    /// détectée avion ») : `session.speedComparisonLabel` retombe toujours sur le même texte
+    /// générique "non calculable" depuis le retrait de la triangulation (plus aucune vitesse en
+    /// pixels à comparer à une plage connue) — n'apporte plus rien à l'utilisateur. Priorité
+    /// maintenant à une identification ADS-B réelle, puis à la forme détectée avec confiance
+    /// (déjà une identification fiable, voir VerdictCalculator règle 0), et seulement en dernier
+    /// recours le texte générique d'origine.
+    private func comparisonText() -> String {
+        if session.aircraftLookupStatus == .matched {
+            return "Aéronef identifié par transpondeur ADS-B — voir le recoupement ci-dessous"
+        }
+        if session.shapeConfidence >= 0.4, !session.shapeDescription.isEmpty {
+            return "Forme identifiée avec confiance : \(session.shapeDescription)"
+        }
+        return session.speedComparisonLabel
     }
 
     /// Texte du statut de recoupement ADS-B quand aucune correspondance n'a été trouvée — `nil`

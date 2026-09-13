@@ -28,6 +28,7 @@ final class AircraftLookupServiceTests: XCTestCase {
         XCTAssertEqual(candidates?.first?.longitude, 5.0)
         XCTAssertEqual(candidates?.first?.altitudeMeters, 10500.0)
         XCTAssertFalse(candidates?.first?.onGround ?? true)
+        XCTAssertEqual(candidates?.first?.groundSpeedMS, 250.0)
     }
 
     func testParseStatesSkipsMalformedRowsWithoutFailingTheWholeResponse() {
@@ -63,7 +64,7 @@ final class AircraftLookupServiceTests: XCTestCase {
         let observer = CLCoordinate(lat: 45.0, lon: -73.0)
         // Avion droit au nord (~50 km), altitude de croisière -> élévation faible mais non nulle.
         let candidate = AircraftLookupService.AircraftCandidate(
-            icao24: "abc123", callsign: "AFR123", latitude: 45.45, longitude: -73.0, altitudeMeters: 10000, onGround: false
+            icao24: "abc123", callsign: "AFR123", latitude: 45.45, longitude: -73.0, altitudeMeters: 10000, onGround: false, groundSpeedMS: nil
         )
         let match = AircraftLookupService.closestMatch(
             candidates: [candidate], observerLocation: observer,
@@ -76,7 +77,7 @@ final class AircraftLookupServiceTests: XCTestCase {
     func testClosestMatchReturnsNilWhenNoAircraftWithinTolerance() {
         let observer = CLCoordinate(lat: 45.0, lon: -73.0)
         let candidate = AircraftLookupService.AircraftCandidate(
-            icao24: "abc123", callsign: nil, latitude: 45.45, longitude: -73.0, altitudeMeters: 10000, onGround: false
+            icao24: "abc123", callsign: nil, latitude: 45.45, longitude: -73.0, altitudeMeters: 10000, onGround: false, groundSpeedMS: nil
         )
         // Direction observée à l'opposé (sud) : aucune correspondance possible dans la tolérance.
         let match = AircraftLookupService.closestMatch(
@@ -89,7 +90,7 @@ final class AircraftLookupServiceTests: XCTestCase {
     func testClosestMatchIgnoresAircraftOnGround() {
         let observer = CLCoordinate(lat: 45.0, lon: -73.0)
         let onGround = AircraftLookupService.AircraftCandidate(
-            icao24: "abc123", callsign: nil, latitude: 45.001, longitude: -73.0, altitudeMeters: 0, onGround: true
+            icao24: "abc123", callsign: nil, latitude: 45.001, longitude: -73.0, altitudeMeters: 0, onGround: true, groundSpeedMS: nil
         )
         let match = AircraftLookupService.closestMatch(
             candidates: [onGround], observerLocation: observer,
@@ -101,10 +102,10 @@ final class AircraftLookupServiceTests: XCTestCase {
     func testClosestMatchPicksTheClosestAmongMultipleCandidates() {
         let observer = CLCoordinate(lat: 45.0, lon: -73.0)
         let far = AircraftLookupService.AircraftCandidate(
-            icao24: "far", callsign: nil, latitude: 45.45, longitude: -72.5, altitudeMeters: 10000, onGround: false
+            icao24: "far", callsign: nil, latitude: 45.45, longitude: -72.5, altitudeMeters: 10000, onGround: false, groundSpeedMS: nil
         )
         let near = AircraftLookupService.AircraftCandidate(
-            icao24: "near", callsign: nil, latitude: 45.45, longitude: -73.0, altitudeMeters: 10000, onGround: false
+            icao24: "near", callsign: nil, latitude: 45.45, longitude: -73.0, altitudeMeters: 10000, onGround: false, groundSpeedMS: nil
         )
         let match = AircraftLookupService.closestMatch(
             candidates: [far, near], observerLocation: observer,

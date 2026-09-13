@@ -31,6 +31,12 @@ enum AircraftLookupService {
         let longitude: Double
         let altitudeMeters: Double?
         let onGround: Bool
+        /// Vitesse sol RÉELLE (m/s), telle que rapportée par le transpondeur de l'avion — pas une
+        /// estimation. Utilisée en priorité sur toute vitesse déduite de pixels quand une
+        /// correspondance ADS-B est trouvée (voir `AnalysisEngine`/`ResultsView`, demande explicite
+        /// de Jean-David du 2026-09-13 : afficher une vitesse cohérente pour un avion identifié
+        /// plutôt que « non calculable »).
+        let groundSpeedMS: Double?
     }
 
     enum LookupError: Error, Equatable {
@@ -121,13 +127,15 @@ enum AircraftLookupService {
             // `geo_altitude` (13) préférée à `baro_altitude` (7, sensible à la pression
             // atmosphérique locale) ; repli sur baro_altitude si geo_altitude est absente.
             let altitude = (row[13] as? Double) ?? (row[7] as? Double)
+            let groundSpeed = row.count > 9 ? row[9] as? Double : nil
             return AircraftCandidate(
                 icao24: icao24,
                 callsign: (rawCallsign?.isEmpty ?? true) ? nil : rawCallsign,
                 latitude: latitude,
                 longitude: longitude,
                 altitudeMeters: altitude,
-                onGround: onGround
+                onGround: onGround,
+                groundSpeedMS: groundSpeed
             )
         }
     }
