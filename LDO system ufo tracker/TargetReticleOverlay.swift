@@ -7,13 +7,15 @@
 import SwiftUI
 
 /// Réticule de ciblage superposable sur un aperçu vidéo (caméra en direct ou lecteur de relecture) :
-/// un tap place le centre, GLISSER LE DOIGT EN LE MAINTENANT sur la cible la déplace en continu vers
-/// une nouvelle destination (pas seulement un saut instantané à la fin du geste — demande explicite
-/// de Jean-David, 2026-09-13 : « tenir la cible pour la déplacer vers destination »), et une poignée
-/// sur le bord du cercle permet de l'agrandir/rétrécir — demande explicite de Jean-David (2026-09-11) :
-/// « toucher la cible à l'écran, c'est la zone à analyser, en mode capture et en mode analyse » +
-/// choix explicite de la poignée de redimensionnement plutôt qu'un second geste de pincement (qui
-/// entrerait en conflit avec le zoom).
+/// toucher la cible (l'intérieur du cercle) et glisser la DÉPLACE en continu vers une nouvelle
+/// destination ; toucher ailleurs sur l'écran la REPOSITIONNE instantanément à l'endroit touché ;
+/// toucher précisément le POINT BLANC sur le bord du cercle permet de l'agrandir/rétrécir — les
+/// trois gestes sont mutuellement exclusifs (voir `FullScreenMinusHandle` ci-dessous), pas de zone
+/// ambiguë entre eux. Demandes explicites de Jean-David (2026-09-13) : « tenir la cible pour la
+/// déplacer vers destination », « si on touche ailleurs sur l'écran on doit pouvoir repositionner la
+/// cible à l'endroit touché », et « pour agrandir la zone on doit toucher le point blanc... pas
+/// n'importe où sur la cible » (voir le correctif ci-dessous, l'ancienne heuristique par distance
+/// entre le début du geste et la poignée n'excluait pas fiablement le reste du cercle).
 ///
 /// Composant partagé entre `LiveTabView` (ciblage en direct, avant/pendant l'enregistrement) et
 /// `ClipTrimView` (ciblage après l'enregistrement, en choisissant l'extrait à analyser) — évite de
@@ -31,6 +33,18 @@ struct TargetReticleOverlay: View {
     private let minRadius: CGFloat = 24
     private let maxRadiusFraction: CGFloat = 0.45   // fraction de la plus petite dimension du cadre
 
+    /// Rayon de la zone TACTILE (pas du dessin, voir `handleVisualDiameter`) réservée à la poignée de
+    /// redimensionnement — plus grande que le point blanc affiché (repère Apple : cible tactile
+    /// minimale ~44pt de diamètre), et surtout : EXACTEMENT la même zone est à la fois exclue du
+    /// geste de déplacement/placement (voir `FullScreenMinusHandle`) et attachée au geste de
+    /// redimensionnement (voir `.contentShape(Circle())` sur la poignée plus bas) — élimine toute
+    /// zone morte ou ambiguïté entre les deux gestes par construction géométrique, plutôt que par une
+    /// heuristique de distance au démarrage du geste (BUG CORRIGÉ, signalé par Jean-David,
+    /// 2026-09-13 : « si on touche la cible ça s'agrandit » — toucher n'importe où sur l'anneau
+    /// visible, pas seulement le point blanc, pouvait déclencher le redimensionnement).
+    private let handleTouchRadius: CGFloat = 22
+    private let handleVisualDiameter: CGFloat = 22
+
     /// Espace de coordonnées nommé, partagé par les deux gestes ci-dessous — sans lui, `DragGesture`
     /// rapporte `value.location` dans le repère LOCAL de la vue à laquelle il est attaché (le
     /// comportement par défaut, `coordinateSpace: .local`) : pour la poignée (un cercle de 22×22pt),
@@ -41,34 +55,35 @@ struct TargetReticleOverlay: View {
     /// immédiatement à `minRadius`).
     private let coordinateSpaceName = "targetReticle"
 
+    /// Position de la poignée de redimensionnement (bord droit du cercle, angle 0) — `nil` tant
+    /// qu'aucune cible n'est placée. Calculée une seule fois ici, réutilisée à la fois pour le
+    /// dessin, l'exclusion géométrique du geste de déplacement, et le geste de redimensionnement
+    /// lui-même, pour qu'ils restent forcément synchronisés.
+    private var handlePosition: CGPoint? {
+        guard let center else { return nil }
+        return CGPoint(x: center.x + radius, y: center.y)
+    }
+
     var body: some View {
         ZStack {
-            // Zone de tap/glissement : place le centre au premier contact, puis le SUIT en continu
-            // tant que le doigt reste posé (`onChanged`, pas seulement `onEnded`) — pour qu'on puisse
-            // « tenir » la cible et la faire glisser vers une nouvelle destination avec un retour
-            // visuel immédiat, plutôt qu'un simple saut instantané une fois le doigt relevé. Un tap
-            // isolé continue de fonctionner tel quel : `onChanged` se déclenche dès le premier contact
-            // même sans glissement (`minimumDistance: 0`). `contentShape` couvre tout le cadre pour
-            // que le geste fonctionne n'importe où, pas seulement là où un cercle existe déjà.
+            // Zone de tap/glissement : place le centre au premier contact (n'importe où À
+            // L'EXTÉRIEUR de la cible existante = repositionnement instantané à l'endroit touché ;
+            // À L'INTÉRIEUR de la cible = déplacement, qui la suit ensuite en continu tant que le
+            // doigt reste posé, voir `onChanged` plutôt que `onEnded` seul). La poignée de
+            // redimensionnement (voir `handlePosition` ci-dessus) est GÉOMÉTRIQUEMENT EXCLUE de cette
+            // zone tactile (voir `FullScreenMinusHandle`, un simple découpage de forme, pas une
+            // vérification de distance a posteriori) : un toucher qui commence sur la poignée n'active
+            // donc jamais ce geste-ci, seulement celui de la poignée plus bas.
             Color.clear
-                .contentShape(Rectangle())
+                .contentShape(FullScreenMinusHandle(handleCenter: handlePosition, handleRadius: handleTouchRadius), eoFill: true)
                 .simultaneousGesture(
                     DragGesture(minimumDistance: 0, coordinateSpace: .named(coordinateSpaceName))
                         .onChanged { value in
-                            // Ignore les touchers qui commencent près de la poignée existante (voir
-                            // `handlePosition` ci-dessous) : cette zone doit rester réservée au
-                            // redimensionnement, pas au déplacement du centre.
-                            if let center {
-                                let handlePosition = CGPoint(x: center.x + radius, y: center.y)
-                                let dx = value.startLocation.x - handlePosition.x
-                                let dy = value.startLocation.y - handlePosition.y
-                                guard (dx * dx + dy * dy).squareRoot() > 30 else { return }
-                            }
                             center = value.location
                         }
                 )
 
-            if let center {
+            if let center, let handlePosition {
                 Circle()
                     .stroke(Color.ldoSignal, lineWidth: 2.5)
                     .frame(width: radius * 2, height: radius * 2)
@@ -80,15 +95,17 @@ struct TargetReticleOverlay: View {
                     .position(center)
                     .allowsHitTesting(false)
 
-                // Poignée de redimensionnement, sur le bord droit du cercle (angle 0) — on la glisse
-                // horizontalement pour ajuster le rayon, distance de la poignée au centre = nouveau rayon.
-                let handlePosition = CGPoint(x: center.x + radius, y: center.y)
+                // Poignée de redimensionnement — le cadre visible (`handleVisualDiameter`) reste
+                // petit et discret, mais la zone tactile réelle (`handleTouchRadius`, voir le
+                // commentaire de sa déclaration) est plus généreuse et surtout identique à celle
+                // exclue ci-dessus, pour qu'aucun toucher ne tombe dans une zone morte entre les deux.
                 Circle()
                     .fill(Color.white)
-                    .frame(width: 22, height: 22)
+                    .frame(width: handleVisualDiameter, height: handleVisualDiameter)
                     .overlay(Circle().stroke(Color.ldoSignal, lineWidth: 2))
-                    .position(handlePosition)
+                    .frame(width: handleTouchRadius * 2, height: handleTouchRadius * 2)
                     .contentShape(Circle())
+                    .position(handlePosition)
                     .gesture(
                         DragGesture(minimumDistance: 0, coordinateSpace: .named(coordinateSpaceName))
                             .onChanged { value in
@@ -102,6 +119,28 @@ struct TargetReticleOverlay: View {
             }
         }
         .coordinateSpace(name: coordinateSpaceName)
+    }
+}
+
+/// Rectangle plein avec un « trou » circulaire découpé à l'emplacement de la poignée de
+/// redimensionnement (règle du remplissage pair-impair, voir `.contentShape(_:eoFill:)` au point
+/// d'appel) — exclusion géométrique pure, contrairement à une vérification de distance après coup :
+/// un toucher qui débute dans le trou ne peut tout simplement pas être hit-testé par la vue à
+/// laquelle cette forme sert de `contentShape`, quel que soit l'ordre d'évaluation des gestes.
+private struct FullScreenMinusHandle: Shape {
+    let handleCenter: CGPoint?
+    let handleRadius: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path(rect)
+        if let handleCenter {
+            let holeRect = CGRect(
+                x: handleCenter.x - handleRadius, y: handleCenter.y - handleRadius,
+                width: handleRadius * 2, height: handleRadius * 2
+            )
+            path.addPath(Path(ellipseIn: holeRect))
+        }
+        return path
     }
 }
 

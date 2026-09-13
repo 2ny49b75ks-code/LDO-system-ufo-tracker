@@ -11,10 +11,8 @@ import SceneKit
 /// Affiche en plein écran le flux caméra + AR d'une `ARSession` déjà démarrée ailleurs
 /// (voir `CaptureManager.configureARTracking()`), sans créer ni gérer sa propre session.
 ///
-/// Utilise `ARSCNView` plutôt que `ARView` (RealityKit) car le reste du pipeline LDO
-/// (voir `ShapeClassifier.buildApproximate3DSilhouette`) prévoit un usage ultérieur de
-/// RealityKit séparément — on garde donc ici la vue la plus légère possible, uniquement
-/// pour l'aperçu caméra.
+/// Utilise `ARSCNView` (pas `ARView`/RealityKit, retiré — voir la fonctionnalité de rendu 3D/réalité
+/// augmentée supprimée, 2026-09-13) : la vue la plus légère possible, uniquement pour l'aperçu caméra.
 struct CameraPreviewView: UIViewRepresentable {
     let session: ARSession
     /// Zoom numérique appliqué à l'aperçu — doit rester visuellement identique au recadrage

@@ -16,18 +16,6 @@ struct ResultsView: View {
     /// Remet l'app à zéro pour la prochaine capture — voir la demande de réinitialisation
     /// automatique une fois le cycle capture + photos + analyse terminé.
     var onFinished: () -> Void = {}
-    /// Affiche le rendu 3D approximatif en réalité augmentée (voir `AR3DPreviewView`) — demande
-    /// explicite de Jean-David (2026-08-27) : « bouton voir rendu 3D... en réalité augmentée et le
-    /// sauvegarder au besoin » + « partager le rendu 3D » (les deux fournis nativement par Quick Look).
-    ///
-    /// BUG CRITIQUE CORRIGÉ (2026-09-11, « l'app plante quand on analyse une vidéo ») : le modèle
-    /// était auparavant généré de façon SYNCHRONE pendant l'analyse elle-même, via un pontage
-    /// Task+sémaphore dangereux (voir `ShapeClassifier.buildApproximate3DSilhouette`). Il est
-    /// maintenant généré ICI, à la demande, dans un contexte async naturel (bouton pressé) —
-    /// `model3DURL`/`isGenerating3DModel` remplacent la dépendance à `session.known3DModelURL`.
-    @State private var show3DPreview = false
-    @State private var model3DURL: URL?
-    @State private var isGenerating3DModel = false
 
     var body: some View {
         NavigationView {
@@ -35,11 +23,6 @@ struct ResultsView: View {
                 resultsContent
             }
             .navigationTitle("Analyse LDO")
-        }
-        .sheet(isPresented: $show3DPreview) {
-            if let model3DURL {
-                AR3DPreviewView(modelURL: model3DURL)
-            }
         }
     }
 
@@ -83,33 +66,6 @@ struct ResultsView: View {
                         resultRow("Date et heure", session.timestamp.formatted())
                         resultRow("Forme détectée", session.shapeDescription +
                                   " (\(Int(session.shapeConfidence * 100))% de confiance)")
-                        if session.luminousRegionForModel != nil {
-                            Button {
-                                if model3DURL != nil {
-                                    show3DPreview = true   // déjà généré lors d'un appui précédent
-                                } else {
-                                    isGenerating3DModel = true
-                                    Task {
-                                        let url = await ShapeClassifier().buildApproximate3DSilhouette(luminousRegion: session.luminousRegionForModel)
-                                        isGenerating3DModel = false
-                                        if let url {
-                                            model3DURL = url
-                                            show3DPreview = true
-                                        }
-                                    }
-                                }
-                            } label: {
-                                Label(isGenerating3DModel ? "Génération en cours…" : "Voir en 3D / réalité augmentée", systemImage: "cube.transparent")
-                                    .font(.subheadline)
-                                    .padding(.horizontal, 16)
-                                    .padding(.vertical, 8)
-                                    .background(Color.ldoNebulaLight.opacity(0.2))
-                                    .foregroundColor(.ldoNebulaLight)
-                                    .clipShape(Capsule())
-                            }
-                            .disabled(isGenerating3DModel)
-                            .accessibilityHint("Ouvre le rendu 3D approximatif de l'objet — bouton réalité augmentée et bouton de partage/enregistrement fournis dans cet écran")
-                        }
                         resultRow("Illumination", "\(session.illuminationPattern) — couleur : \(session.illuminationColor)")
                         resultRow("Direction", session.isLinear ? "Trajectoire rectiligne continue (R²: \(String(format: "%.2f", session.linearityR2)))" : "Trajectoire asymétrique / changements brusques (R²: \(String(format: "%.2f", session.linearityR2)))")
                         resultRow("Vitesse", "Moyenne : \(Int(session.estimatedSpeedKmh)) km/h — Max : \(Int(session.maxSpeedKmh)) km/h" +

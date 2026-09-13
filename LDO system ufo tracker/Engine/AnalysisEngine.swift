@@ -20,8 +20,6 @@ struct AnalysisSession: Identifiable, Equatable {
 
     var shapeDescription: String = ""
     var shapeConfidence: Double = 0
-    var known3DModelURL: URL?              // rendu 3D approximatif exporté (.usdz), généré à la demande (voir ResultsView)
-    var luminousRegionForModel: LuminousRegion?   // conservé pour permettre cette génération différée
 
     var trajectory: [CGPoint] = []          // trajectoire en pixels, superposée en rouge
     var trajectoryOnMap: [CLCoordinate] = [] // vue aérienne (MapKit)
@@ -203,12 +201,6 @@ final class AnalysisEngine {
         let shape = shapeClassifier.classifyShape(detections: detections, frames: frames, mode: mode)
         session.shapeDescription = shape.label
         session.shapeConfidence = shape.confidence
-        // Le rendu 3D n'est plus généré ici (voir le commentaire détaillé sur
-        // `ShapeClassifier.buildApproximate3DSilhouette` — appeler cette fonction async depuis ce
-        // pipeline synchrone exigeait un pontage Task+sémaphore qui causait un plantage/blocage à
-        // l'analyse). `luminousRegionForModel` conserve seulement la donnée nécessaire ; la
-        // génération réelle se fait à la demande, quand l'utilisateur appuie sur « Voir en 3D ».
-        session.luminousRegionForModel = shape.luminousRegion
         session.hasContrail = shape.hasContrail
         // Direction verticale (monte/descend) sur l'ensemble du clip — sur les positions brutes à
         // l'écran, pas la trajectoire angulaire corrigée de la pose (calculable même sans pose ARKit,

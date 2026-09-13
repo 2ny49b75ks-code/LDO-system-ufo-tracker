@@ -19,15 +19,22 @@ import UIKit
 /// être mesurée via Auto Layout plutôt que devinée.
 @MainActor
 enum ResultsScreenshotRenderer {
+    /// Construit le contenu racine — factorisé pour être réutilisé deux fois (voir `render` ci-dessous) :
+    /// une première fois sans hauteur imposée (pour MESURER la hauteur intrinsèque via Auto Layout),
+    /// puis une seconde fois avec la hauteur mesurée et `alignment: .top` explicite.
+    private static func makeContent(session: AnalysisSession, width: CGFloat, height: CGFloat?) -> AnyView {
+        let base = ResultsView(session: session).resultsContent
+            .frame(width: width)
+            .background(Color.black)
+            .preferredColorScheme(.dark)
+        guard let height else { return AnyView(base) }
+        return AnyView(base.frame(width: width, height: height, alignment: .top))
+    }
+
     static func render(session: AnalysisSession) async -> CGImage? {
         let width: CGFloat = 1080
 
-        let hostingController = UIHostingController(
-            rootView: ResultsView(session: session).resultsContent
-                .frame(width: width)
-                .background(Color.black)
-                .preferredColorScheme(.dark)
-        )
+        let hostingController = UIHostingController(rootView: makeContent(session: session, width: width, height: nil))
         hostingController.view.backgroundColor = .black
 
         // Fenêtre réelle mais hors écran (à gauche de l'écran visible) — nécessaire pour que MapKit
@@ -48,6 +55,17 @@ enum ResultsScreenshotRenderer {
             verticalFittingPriority: .fittingSizeLevel
         )
         let height = max(fittingSize.height, 200)
+
+        // BUG CORRIGÉ (signalé par Jean-David, 2026-09-13 : « bande noir en haut et en bas du
+        // texte ») : `UIHostingController` CENTRE verticalement son contenu SwiftUI quand la vue
+        // hôte (`view.frame`, agrandie juste en dessous à la hauteur mesurée ci-dessus) est plus
+        // grande que la taille intrinsèque réellement rendue — un léger écart entre la mesure
+        // (`systemLayoutSizeFitting`) et le rendu final (ex. après le chargement des tuiles MapKit,
+        // qui peut légèrement changer la mise en page) suffit à laisser un residu d'espace, réparti
+        // symétriquement en haut ET en bas plutôt qu'au bas seulement. On réassigne la vue racine
+        // avec cette fois une hauteur ET un alignement EXPLICITES (`alignment: .top`) : le contenu
+        // remplit alors tout le cadre depuis le haut, sans ambiguïté laissée à SwiftUI/UIKit.
+        hostingController.rootView = makeContent(session: session, width: width, height: height)
         window.frame = CGRect(x: -width - 200, y: 0, width: width, height: height)
         hostingController.view.frame = CGRect(x: 0, y: 0, width: width, height: height)
         hostingController.view.layoutIfNeeded()

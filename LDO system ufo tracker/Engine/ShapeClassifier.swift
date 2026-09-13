@@ -9,8 +9,6 @@ import CoreImage
 import CoreImage.CIFilterBuiltins
 import CoreGraphics
 import Vision
-import RealityKit
-import UIKit
 
 /// Étape 3 : classification de la forme + isolement de la zone lumineuse.
 ///
@@ -163,71 +161,6 @@ final class ShapeClassifier {
         // Taux de remplissage idéal d'un disque net dans sa boîte englobante carrée : π/4.
         let idealCircularFillRatio = Double.pi / 4
         return min(abs(fillRatio - idealCircularFillRatio) / idealCircularFillRatio, 1.0)
-    }
-
-    /// Génère une approximation 3D très simplifiée : un volume mince aux proportions de la zone
-    /// lumineuse détectée (boîte englobante), teinté de sa couleur moyenne mesurée. Ce n'est PAS une
-    /// reconstruction 3D véritable (celle-ci demanderait plusieurs points de vue simultanés ou un scan
-    /// LiDAR rapproché, et `LuminousRegion` ne conserve qu'une boîte englobante + des statistiques
-    /// agrégées, pas un masque de silhouette pixel par pixel) — seulement une aide visuelle exportée
-    /// en `.usdz`, viewable/partageable en réalité augmentée via Quick Look (voir `AR3DPreviewView`),
-    /// clairement présentée comme une approximation.
-    ///
-    /// IMPLÉMENTÉ (2026-08-27, demande de Jean-David : bouton « voir en 3D/RA ») : cette fonction
-    /// retournait auparavant toujours `nil` (non implémentée).
-    ///
-    /// BUG CRITIQUE CORRIGÉ (2026-09-11, signalé par Jean-David : « l'app plante quand on analyse
-    /// une vidéo ») : cette fonction était appelée de façon SYNCHRONE, en plein milieu du pipeline
-    /// d'analyse (`AnalysisEngine.analyze`, lui-même exécuté sur une file `DispatchQueue.global` par
-    /// `SessionAnalyzer`), via un pont `Task { ... } + DispatchSemaphore.wait()` pour appeler
-    /// `Entity.write(to:)` (async, RealityKit). C'est EXACTEMENT le pontage Task+sémaphore depuis une
-    /// file GCD que ce projet documente déjà ailleurs (`VideoFrameExtractor`, commit 095a008) comme
-    /// ayant déjà causé une régression majeure : le `Task {}` non structuré s'exécute sur le pool de
-    /// threads coopératif de Swift Concurrency, qui peut être saturé/en interblocage avec la file GCD
-    /// qui attend dessus via le sémaphore — un vrai risque de blocage/plantage, pas hypothétique.
-    /// Cette fonction est maintenant `async` et n'est appelée QUE depuis un contexte Swift Concurrency
-    /// naturel (le bouton « Voir en 3D » de `ResultsView`, à la demande de l'utilisateur) — retirée du
-    /// pipeline d'analyse synchrone (voir `AnalysisEngine.swift`), qui ne génère plus le modèle 3D
-    /// automatiquement pour chaque vidéo (travail inutile si l'utilisateur ne regarde jamais ce
-    /// rendu) — seulement `LuminousRegion`, une donnée déjà calculée, est conservée dans la session
-    /// pour permettre cette génération différée.
-    func buildApproximate3DSilhouette(luminousRegion: LuminousRegion?) async -> URL? {
-        guard let region = luminousRegion, region.boundingBoxInImage.width > 0, region.boundingBoxInImage.height > 0 else { return nil }
-
-        // Proportions du volume calquées sur celles de la boîte englobante réelle (largeur/hauteur),
-        // profondeur fixe et mince — un point lumineux distant n'a aucune information de profondeur
-        // mesurable, on ne prétend donc pas en connaître une.
-        let aspect = Float(region.boundingBoxInImage.width / region.boundingBoxInImage.height)
-        let baseSize: Float = 0.3   // mètres, taille de référence arbitraire pour l'affichage RA
-        let width = aspect >= 1 ? baseSize : baseSize * aspect
-        let height = aspect >= 1 ? baseSize / aspect : baseSize
-        let depth: Float = min(width, height) * 0.15
-
-        let mesh = MeshResource.generateBox(width: width, height: height, depth: depth, cornerRadius: depth / 2)
-        var material = SimpleMaterial()
-        material.color = .init(tint: UIColor(
-            red: CGFloat(region.averageColor.r),
-            green: CGFloat(region.averageColor.g),
-            blue: CGFloat(region.averageColor.b),
-            alpha: 1
-        ))
-        material.roughness = .float(0.3)
-        material.metallic = .float(0.6)
-        let modelEntity = ModelEntity(mesh: mesh, materials: [material])
-
-        let outputURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString)
-            .appendingPathExtension("usdz")
-
-        do {
-            try await modelEntity.write(to: outputURL)
-            return outputURL
-        } catch {
-            #if DEBUG
-            print("LDO_DEBUG buildApproximate3DSilhouette : échec de l'export .usdz — \(error.localizedDescription)")
-            #endif
-            return nil
-        }
     }
 
     /// Échantillonne quelques images (jusqu'à 5) autour des détections et cherche une main humaine
